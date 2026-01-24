@@ -23,12 +23,6 @@
 
 ### USAGE
 	
-	Install using 
-		brew install tuiwall // MacOS
-		sudo apt-get install tuiwall // Ubuntu / Debian
-		sudo pacman install tuiwall // Arch
-		sudo yum install tuiwall // Amazon
-
 	Enable / Disable header using
 		tuiwall enable / disable
 
