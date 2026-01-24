@@ -31,7 +31,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "enable":
-	EnsureTmuxOrReexec([]string{"enable"})
+	mustInTmux()
     	// once we're in tmux, continue normally:
     	exe := tmux.MustExecutablePath()
     	if err := enable(exe); err != nil {
