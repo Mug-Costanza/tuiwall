@@ -1,0 +1,5 @@
+#!/bin/bash
+
+go build -o tuiwall cmd/tuiwall/main.go
+sudo cp tuiwall /opt/homebrew/bin/
+
