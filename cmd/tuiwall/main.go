@@ -14,15 +14,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"bufio"
+	"net"
+	"sync"
+	"github.com/creack/pty"
 	"tuiwall/internal/tmux"
 )
 
 func main() {
-	if os.Getenv("TUIWALL_HEADER") == "1" {
-        runHeader()
-        return
-    }
 
 	if len(os.Args) < 2 {
 		usage()
@@ -373,9 +371,6 @@ func enable(exePath string) error {
     // Create an empty output file for the mirrors to follow
     _ = exec.Command("touch", "/tmp/tuiwall.out").Run()
 
-    // Start the Master. Notice we redirect its output to the file.
-    // This is the "Radio Tower" that sends the animation to all windows.
-
 cw, ch, _ := tmux.CurrentClientSize()
 if cw <= 0 { cw = 80 }
 if ch <= 0 { ch = 24 }
@@ -390,9 +385,11 @@ if err != nil || mw <= 0 || mh <= 0 {
 	if ch > 0 { mh = ch } else { mh = 24 }
 }
 
-    masterCmd := fmt.Sprintf("TUIWALL_HEADER=1 %s > /tmp/tuiwall.out", shellEscape(exePath))
-    
+masterCmd := fmt.Sprintf("%s _master", shellEscape(exePath))
+
     _ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
+
+fmt.Printf("hello")
 
 err = exec.Command("tmux", "new-session", "-d",
     "-x", fmt.Sprint(mw),
@@ -401,6 +398,7 @@ err = exec.Command("tmux", "new-session", "-d",
     masterCmd,
 ).Run()
 
+_ = exec.Command("tmux", "wait-for", "tuiwall_ready").Run()
     
 if err != nil {
         return err
@@ -460,19 +458,207 @@ func ensureFIFOExists() error {
     return nil
 }
 
-func runMaster() {
-    _ = ensureFIFOExists()
-    fifoPath := getFIFOPath()
+func resolvePreset () string {
+		preset := "template"
+		if os.Getenv("TMUX") != "" {
+			if p, err := tmux.GetGlobalOption("@tuiwall_preset"); err == nil {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					preset = p
+				}
+			}
+		}
+		return preset
+}
 
-    f, err := os.OpenFile(fifoPath, os.O_WRONLY, 0644)
+func runHeaderWithWriter(out io.Writer) {
+	const (
+		HEADER_HEIGHT    = 10
+		DEBOUNCE         = 250 * time.Millisecond
+		RETRY_BACKOFF    = 1 * time.Second
+		TICK             = 250 * time.Millisecond
+		FAST_EXIT_CUTOFF = 500 * time.Millisecond
+	)
+
+	paneID := strings.TrimSpace(os.Getenv("TMUX_PANE"))
+
+	// Helper to send "clear" commands to the socket
+	sendClear := func() {
+		_, _ = out.Write([]byte("\x1b[2J\x1b[H"))
+	}
+
+	/*
+	resolvePreset := func() string {
+		preset := "template"
+		if os.Getenv("TMUX") != "" {
+			if p, err := tmux.GetGlobalOption("@tuiwall_preset"); err == nil {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					preset = p
+				}
+			}
+		}
+		return preset
+	}*/
+
+	var (
+		curPreset     string
+		pendingPreset string
+		pendingSince  time.Time
+		cmd           *exec.Cmd
+		nextStartAfter time.Time
+	)
+
+	killChild := func() {
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+		cmd = nil
+	}
+
+	startPreset := func(preset string) {
+		killChild()
+		sendClear()
+
+		script, ok := presetScriptPath(preset)
+		if !ok {
+			_, _ = fmt.Fprintf(out, "tuiwall: preset %q not found\n", preset)
+			curPreset = preset
+			return
+		}
+
+		c := exec.Command("python3", script)
+		c.Stdin = os.Stdin
+		c.Stdout = out // REDIRECTED TO PIPE
+		c.Stderr = os.Stderr
+
+		if err := c.Start(); err != nil {
+			_, _ = fmt.Fprintf(out, "tuiwall: python start failed: %v\n", err)
+			nextStartAfter = time.Now().Add(RETRY_BACKOFF)
+			return
+		}
+
+		cmd = c
+		curPreset = preset
+
+		if paneID != "" {
+			_ = tmux.ResizePaneHeight(paneID, HEADER_HEIGHT)
+		}
+
+		startedAt := time.Now()
+		go func(local *exec.Cmd, started time.Time) {
+			_ = local.Wait()
+			if cmd == local {
+				cmd = nil
+			}
+			if time.Since(started) < FAST_EXIT_CUTOFF {
+				nextStartAfter = time.Now().Add(RETRY_BACKOFF)
+			}
+		}(c, startedAt)
+	}
+
+	// Initial start
+	curPreset = resolvePreset()
+	startPreset(curPreset)
+
+	ticker := time.NewTicker(TICK)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		desired := resolvePreset()
+
+		if desired != curPreset {
+			if desired != pendingPreset {
+				pendingPreset = desired
+				pendingSince = now
+			}
+
+			if now.Sub(pendingSince) >= DEBOUNCE && now.After(nextStartAfter) {
+				startPreset(pendingPreset)
+				pendingPreset = ""
+			}
+			continue
+		}
+
+		if cmd == nil && curPreset != "" && now.After(nextStartAfter) {
+			if _, ok := presetScriptPath(curPreset); ok {
+				startPreset(curPreset)
+			}
+		}
+	}
+}
+
+
+// Inside runMaster or runHeaderWithWriter
+func startPresetWithPTY(preset string, clients *[]net.Conn, mu *sync.Mutex) {
+    script, _ := presetScriptPath(preset)
+    c := exec.Command("python3", script)
+
+    // Start the command with a PTY
+    f, err := pty.Start(c)
     if err != nil {
-        fatal(err)
+        return
     }
     defer f.Close()
 
-    os.Stdout = f
-    
-    runHeader() 
+    // Set the PTY size to match your expected HEADER_HEIGHT (10)
+    _ = pty.Setsize(f, &pty.Winsize{Rows: 10, Cols: 100})
+
+    // Read raw bytes from the PTY and broadcast to all socket clients
+    buf := make([]byte, 32768)
+    for {
+        _, err := f.Read(buf)
+        if err != nil {
+            break // Python exited
+        }
+
+        mu.Lock()
+        for i := 0; i < len(*clients); i++ {
+		*clients = append((*clients)[:i], (*clients)[i+1:]...)
+        }
+
+        mu.Unlock()
+    }
+}
+func runMaster() {
+    socketPath := "/tmp/tuiwall.sock"
+		fmt.Printf("runMaster being ran")
+    _ = os.Remove(socketPath)
+
+    l, err := net.Listen("unix", socketPath)
+    if err != nil {
+        fatal(err)
+    }
+    defer l.Close()
+
+_ = exec.Command("tmux", "wait-for", "-S", "tuiwall_ready").Run()
+    var clients []net.Conn
+    var mu sync.Mutex
+
+    // Accept loop: Keep track of all tmux panes watching the header
+    go func() {
+        for {
+            conn, err := l.Accept()
+            if err == nil {
+                mu.Lock()
+                clients = append(clients, conn)
+                mu.Unlock()
+            }
+        }
+    }()
+
+    // The Controller: Watch for preset changes and start the PTY
+    for {
+        preset := resolvePreset() // Use your existing resolvePreset logic
+        
+        // This function (your PTY logic) blocks until the Python process dies
+        // or a new preset is requested.
+        startPresetWithPTY(preset,  &clients, &mu)
+        
+        time.Sleep(time.Second) // Backoff before restarting/switching
+    }
 }
 
 func sanitizeKey(k string) string {
@@ -833,7 +1019,7 @@ func ensureHeaderForWindow(exePath, windowID string) {
 
     // 3. THE COMMAND: Passive mirror (reading from a shared file is the most stable)
     // We use tail -f because multiple panes can read the same file without conflict.
-    mirrorCmd := "TUIWALL_HEADER=1 " + shellEscape(exePath) + " _mirror"
+    mirrorCmd := shellEscape(exePath) + " _mirror"
 
     // 4. SPLIT: This will trigger the hook again, but the check in Step 1 will catch it.
     newPane, err := tmux.SplitTopPaneInWindow(windowID, HEADER_HEIGHT, mirrorCmd)
@@ -1505,64 +1691,32 @@ func presetZip(name string) (string, error) {
 }
 
 func runMirror() {
-    const H = 10
-    const SENTINEL = "---FRAME---"
+fmt.Printf("runMirror being ran")
 
-    // Clear + home; hide cursor; disable wrap
-    fmt.Print("\x1b[2J\x1b[H\x1b[?25l\x1b[?7l")
+var conn net.Conn
+    var err error
+    
+    // Retry for up to ~3 seconds
+    for i := 0; i < 15; i++ {
+        conn, err = net.Dial("unix", "/tmp/tuiwall.sock")
+        if err == nil {
+            break
+        }
+        time.Sleep(200 * time.Millisecond)
+	fmt.Printf("Connection successful")
+    }
 
-    // Open the shared output file and follow it
-    f, err := os.Open("/tmp/tuiwall.out")
+
     if err != nil {
-        fmt.Printf("tuiwall: mirror open failed: %v\n", err)
+        fmt.Printf("Connection failed: %v\n", err)
         return
     }
-    defer f.Close()
+    defer conn.Close()    
 
-    r := bufio.NewReader(f)
+// 2. Hide cursor and clear screen initially
+    fmt.Print("\x1b[?25l\x1b[2J\x1b[H")
 
-    // Track a frame and redraw only when complete
-    frame := make([]string, 0, H)
-    prev := make([]string, H)
-
-    for {
-        line, err := r.ReadString('\n')
-        if err != nil {
-            // nothing new yet
-            time.Sleep(30 * time.Millisecond)
-            continue
-        }
-        line = strings.TrimRight(line, "\r\n")
-
-        if line == SENTINEL {
-            // finalize frame to exactly H lines
-            for len(frame) < H {
-                frame = append(frame, "")
-            }
-            if len(frame) > H {
-                frame = frame[:H]
-            }
-
-            // redraw only changed lines; never print extra newlines
-            for i := 0; i < H; i++ {
-                if frame[i] == prev[i] {
-                    continue
-                }
-                prev[i] = frame[i]
-                fmt.Printf("\x1b[%d;1H", i+1)
-		fmt.Print(frame[i])
-                fmt.Print("\x1b[K")
-            }
-
-            frame = frame[:0]
-            continue
-        }
-
-        // collect only up to H lines; ignore overflow until sentinel
-        if len(frame) < H {
-            frame = append(frame, line)
-        }
-    }
+    // 3. Direct Pipe: Whatever the socket sends, the terminal renders.
+    // This handles all curses colors and positioning automatically.
+    _, _ = io.Copy(os.Stdout, conn)
 }
-
-
