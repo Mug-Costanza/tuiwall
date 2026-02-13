@@ -196,6 +196,18 @@ case "upload":
         fatal(err)
     }
 
+case "_update-master-size":
+    // Get current max dimensions from tmux
+    mw, mh, _ := tmux.MaxPaneSize() 
+    if mw > 0 && mh > 0 {
+        // Update the master session size
+        _ = exec.Command("tmux", "resize-window", "-t", "tuiwall-master:0", "-x", fmt.Sprint(mw), "-y", "10").Run()
+        
+        // Signal the Master process to update PTY size
+        // We can do this via the socket or a simple signal if we track the PID
+        // For now, sending SIGWINCH to the Master process is the cleanest way:
+        _ = exec.Command("pkill", "-SIGWINCH", "-f", "tuiwall _master").Run()
+    }
 	case "_ensure-header":
     mustInTmux()
 
@@ -388,8 +400,6 @@ if err != nil || mw <= 0 || mh <= 0 {
 masterCmd := fmt.Sprintf("%s _master", shellEscape(exePath))
 
     _ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
-
-fmt.Printf("hello")
 
 err = exec.Command("tmux", "new-session", "-d",
     "-x", fmt.Sprint(mw),
@@ -591,40 +601,68 @@ func runHeaderWithWriter(out io.Writer) {
 }
 
 
-// Inside runMaster or runHeaderWithWriter
-func startPresetWithPTY(preset string, clients *[]net.Conn, mu *sync.Mutex) {
-    script, _ := presetScriptPath(preset)
-    c := exec.Command("python3", script)
+// We need to track the current command so the connection loop can signal it
+var currentCmd *exec.Cmd
+var cmdMu sync.Mutex
 
-    // Start the command with a PTY
+func startPresetWithPTY(preset string, clients *[]net.Conn, mu *sync.Mutex) {
+    // \x1b[2J: Clear entire screen
+    // \x1b[H: Move cursor to (1,1)
+    // \x1b[?25l: Hide cursor
+    // \x1b[39;49m: Reset colors to default
+    clearSeq := []byte("\x1b[2J\x1b[H\x1b[?25l\x1b[39;49m")
+    
+    mu.Lock()
+    for _, conn := range *clients {
+        conn.Write(clearSeq)
+    }
+    mu.Unlock()
+
+    script, _ := presetScriptPath(preset)
+    c := exec.Command("python3", "-u", script) // Use -u for unbuffered output
+
     f, err := pty.Start(c)
     if err != nil {
         return
     }
     defer f.Close()
 
-    // Set the PTY size to match your expected HEADER_HEIGHT (10)
-    _ = pty.Setsize(f, &pty.Winsize{Rows: 10, Cols: 100})
+    cmdMu.Lock()
+    currentCmd = c
+    cmdMu.Unlock()
 
-    // Read raw bytes from the PTY and broadcast to all socket clients
+    // Sync PTY size immediately
+    cw, _, _ := tmux.CurrentClientSize()
+    if cw <= 0 { cw = 80 }
+    _ = pty.Setsize(f, &pty.Winsize{Rows: 10, Cols: uint16(cw)})
+
     buf := make([]byte, 32768)
     for {
-        _, err := f.Read(buf)
+        n, err := f.Read(buf)
         if err != nil {
-            break // Python exited
+            break 
         }
+
+        payload := buf[:n]
 
         mu.Lock()
-        for i := 0; i < len(*clients); i++ {
-		*clients = append((*clients)[:i], (*clients)[i+1:]...)
+        activeClients := make([]net.Conn, 0, len(*clients))
+        for _, conn := range *clients {
+            _, err := conn.Write(payload)
+            if err == nil {
+                activeClients = append(activeClients, conn)
+            } else {
+                conn.Close()
+            }
         }
-
+        *clients = activeClients
         mu.Unlock()
     }
 }
+
+
 func runMaster() {
     socketPath := "/tmp/tuiwall.sock"
-		fmt.Printf("runMaster being ran")
     _ = os.Remove(socketPath)
 
     l, err := net.Listen("unix", socketPath)
@@ -633,11 +671,14 @@ func runMaster() {
     }
     defer l.Close()
 
-_ = exec.Command("tmux", "wait-for", "-S", "tuiwall_ready").Run()
+    _ = exec.Command("tmux", "wait-for", "-S", "tuiwall_ready").Run()
     var clients []net.Conn
     var mu sync.Mutex
 
-    // Accept loop: Keep track of all tmux panes watching the header
+    // Signal channel to catch window resizes
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGWINCH)
+
     go func() {
         for {
             conn, err := l.Accept()
@@ -645,21 +686,48 @@ _ = exec.Command("tmux", "wait-for", "-S", "tuiwall_ready").Run()
                 mu.Lock()
                 clients = append(clients, conn)
                 mu.Unlock()
+
+                // Trigger a resize on new connection to sync initial state
+                sigChan <- syscall.SIGWINCH
             }
         }
     }()
 
-    // The Controller: Watch for preset changes and start the PTY
+    // Monitor for preset changes or resize signals
+    go func() {
+        lastPreset := resolvePreset()
+        for {
+            select {
+            case <-sigChan:
+                // When tmux resizes, update the PTY size
+                cmdMu.Lock()
+                if currentCmd != nil {
+                    cw, _, _ := tmux.CurrentClientSize()
+                    if cw > 0 {
+                        // Update PTY size so Python knows the new width
+                        _ = pty.Setsize(nil, &pty.Winsize{Rows: 10, Cols: uint16(cw)}) 
+                        _ = currentCmd.Process.Signal(syscall.SIGWINCH)
+                    }
+                }
+                cmdMu.Unlock()
+            case <-time.After(500 * time.Millisecond):
+                current := resolvePreset()
+                cmdMu.Lock()
+                if current != lastPreset && currentCmd != nil && currentCmd.Process != nil {
+                    _ = currentCmd.Process.Kill()
+                    lastPreset = current
+                }
+                cmdMu.Unlock()
+            }
+        }
+    }()
+
     for {
-        preset := resolvePreset() // Use your existing resolvePreset logic
-        
-        // This function (your PTY logic) blocks until the Python process dies
-        // or a new preset is requested.
-        startPresetWithPTY(preset,  &clients, &mu)
-        
-        time.Sleep(time.Second) // Backoff before restarting/switching
+        preset := resolvePreset()
+        startPresetWithPTY(preset, &clients, &mu)
+        time.Sleep(100 * time.Millisecond)
     }
-}
+} 
 
 func sanitizeKey(k string) string {
 	// Turn status-format[0] into status_format_0
@@ -1091,7 +1159,7 @@ func installHooks(exePath string) {
 	_ = tmux.SetHookGlobal("client-attached", hookCmd)
 
 	resizeCmd := "run-shell -b " + shellEscape("tmux resize-window -t tuiwall-master:0 -x #{client_width} -y #{client_height} >/dev/null 2>&1 || true")
-	_ = tmux.SetHookGlobal("client-resized", resizeCmd)
+_ = tmux.SetHookGlobal("client-resized", resizeCmd)
 }
 
 // Cleanup Hooks
@@ -1691,32 +1759,33 @@ func presetZip(name string) (string, error) {
 }
 
 func runMirror() {
-fmt.Printf("runMirror being ran")
-
-var conn net.Conn
+    var conn net.Conn
     var err error
     
-    // Retry for up to ~3 seconds
     for i := 0; i < 15; i++ {
         conn, err = net.Dial("unix", "/tmp/tuiwall.sock")
         if err == nil {
             break
         }
         time.Sleep(200 * time.Millisecond)
-	fmt.Printf("Connection successful")
     }
 
-
     if err != nil {
-        fmt.Printf("Connection failed: %v\n", err)
         return
     }
     defer conn.Close()    
 
-// 2. Hide cursor and clear screen initially
-    fmt.Print("\x1b[?25l\x1b[2J\x1b[H")
+    // \x1b[2J: Clear screen
+    // \x1b[H: Move cursor to home
+    // \x1b[?25l: Hide cursor
+    // \x1b[7l: Disable line wrapping (prevents overflow to next line)
+// Defensive Reset: 
+    // 1. Reset attributes 
+    // 2. Clear Screen 
+    // 3. Hide Cursor 
+    // 4. Disable Wrap
+    fmt.Print("\x1b[0m\x1b[2J\x1b[H\x1b[?25l\x1b[7l")
 
-    // 3. Direct Pipe: Whatever the socket sends, the terminal renders.
-    // This handles all curses colors and positioning automatically.
     _, _ = io.Copy(os.Stdout, conn)
 }
+
