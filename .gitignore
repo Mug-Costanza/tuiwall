@@ -1,3 +1,31 @@
-
+# .gitignore
 
 ./presets
+# Added by goreleaser init:
+dist/
+
+
+# Vim swap files
+*.swp
+*.swo
+*.swn
+.sw?
+
+
+# Undo and backup files (optional but recommended)
+*.un~
+*~
+*.bak
+
+
+# Local binaries from your .sh scripts
+tuiwall
+tuiwall-*
+tuiwall-linux-*
+tuiwall-darwin-*
+
+# macOS metadata
+.DS_Store
+._*
+
+

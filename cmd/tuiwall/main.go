@@ -16,11 +16,317 @@ import (
 	"sort"
 	"net"
 	"sync"
+	"embed"
 	"github.com/creack/pty"
 	"tuiwall/internal/tmux"
+        "golang.org/x/sys/unix"
 )
 
+var embeddedPresets embed.FS
+
+func checkPlatformSupport() {
+    if getTermiosReq == 0 || setTermiosReq == 0 {
+        // This means the build tags didn't fire or the OS isn't supported
+        fatal(fmt.Errorf("unsupported operating system for PTY operations"))
+    }
+}
+
+func clearWindowStyles() {
+	// -g unsets the global/default style
+	_ = exec.Command("tmux", "set-window-option", "-g", "window-style", "default").Run()
+	_ = exec.Command("tmux", "set-window-option", "-g", "window-active-style", "default").Run()
+	
+	// Also target the current window specifically to be safe
+	_ = exec.Command("tmux", "set-window-option", "window-style", "default").Run()
+	_ = exec.Command("tmux", "set-window-option", "window-active-style", "default").Run()
+}
+
+func ensureExecutable(path string) error {
+    info, err := os.Stat(path)
+    if err != nil {
+        return err
+    }
+    
+    // Add the executable bit (0111) to the existing permissions
+    mode := info.Mode() | 0111
+    return os.Chmod(path, mode)
+}
+
+// Add this to your main.go
+func setupSignalHandler() {
+    sigChan := make(chan os.Signal, 1)
+    // Listen for Ctrl+C (Interrupt) and Kill signals
+    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+    go func() {
+        <-sigChan
+        // This runs even if the program is interrupted
+        fmt.Println("\nCleaning up UI styles...")
+        _ = exec.Command("tmux", "set-window-option", "-g", "window-style", "default").Run()
+        _ = exec.Command("tmux", "set-window-option", "-g", "window-active-style", "default").Run()
+        os.Exit(0)
+    }()
+}
+
+func installEmbeddedTemplate() error {
+    home, err := presetHomeDir()
+    if err != nil { return err }
+    
+    dstDir := filepath.Join(home, "template")
+    if _, err := os.Stat(dstDir); err == nil {
+        return fmt.Errorf("template already installed")
+    }
+
+    _ = os.MkdirAll(dstDir, 0755)
+    
+    // Read from the embedded filesystem
+    content, err := embeddedPresets.ReadFile("internal/presets/template/template.py")
+    if err != nil { return err }
+
+    return os.WriteFile(filepath.Join(dstDir, "template.py"), content, 0644)
+}
+
+func getPythonCmd() string {
+	// Check for python3 first (modern standard)
+	if _, err := exec.LookPath("python3"); err == nil {
+		return "python3"
+	}
+	// Fallback to python (older systems/Windows)
+	if _, err := exec.LookPath("python"); err == nil {
+		return "python"
+	}
+	// Default to python3 and let the error surface during execution
+	return "python3"
+}
+
+type PresetMetadata struct {
+	Name        string
+	Description string
+	Category    string
+	Author      string
+}
+
+func runRecord(name string) {
+    if _, err := exec.LookPath("vhs"); err != nil {
+        fatal(fmt.Errorf("vhs not found. Please install it to use the record feature.\n" +
+            "Visit: https://github.com/charmbracelet/vhs"))
+    }
+
+    scriptPath, err := presetScriptPathStrict(name)
+    if err != nil {
+        fatal(err)
+    }
+    
+    dir := filepath.Dir(scriptPath)
+    tapePath := filepath.Join(dir, "demo.tape")
+    
+    // We use a specific export for ZSH/Bash prompts to strip the username
+    content := fmt.Sprintf(`Output %s.gif
+Set FontSize 20
+Set Width 1200
+Set Height 600
+Set TypingSpeed 0ms
+
+# Start the recording in 'Hide' mode so setup isn't visible
+Hide
+Type "export PS1='$ '" Enter
+Type "export PROMPT='$ '" Enter
+Type "export USER=user" Enter
+Type "export HOME=/home/user" Enter
+Type "clear" Enter
+
+# Start tmux and immediately hide the green status bar
+Type "tmux new-session -s vhs_session" Enter
+Sleep 1s
+Type "tmux set-option status off" Enter
+Type "tuiwall set %s" Enter
+Type "tuiwall enable" Enter
+Type "clear" Enter
+# Only show the recording once the environment is clean
+Show
+
+# Capture 10 seconds of animation
+Sleep 10s
+
+Hide
+# Clean up so the GIF ends cleanly without a hanging shell
+Type "tmux kill-session" Enter
+Show
+`, name, name)
+
+    if err := os.WriteFile(tapePath, []byte(content), 0644); err != nil {
+        fatal(fmt.Errorf("failed to write tape file: %w", err))
+    }
+
+    fmt.Printf("Running vhs to generate %s.gif...\n", name)
+    cmd := exec.Command("vhs", tapePath)
+    cmd.Dir = dir
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    
+    if err := cmd.Run(); err != nil {
+        fatal(fmt.Errorf("vhs failed: %w", err))
+    }
+
+    fmt.Printf("Successfully generated %s.gif in %s\n", name, dir)
+}
+
+func printWrapped(text string, indent int, maxWidth int) {
+    if maxWidth <= indent {
+        maxWidth = 80 // Fallback
+    }
+    
+    words := strings.Fields(text)
+    if len(words) == 0 {
+        return
+    }
+
+    currentLineLength := indent
+    for _, word := range words {
+        // If the word + a space would exceed the width, start a new line
+        if currentLineLength+len(word)+1 > maxWidth {
+            fmt.Print("\n" + strings.Repeat(" ", indent))
+            currentLineLength = indent
+        }
+        
+        fmt.Print(word + " ")
+        currentLineLength += len(word) + 1
+    }
+}
+
+func confirmAction(prompt string) bool {
+	fmt.Printf("%s [y/N]: ", prompt)
+	var response string
+	_, err := fmt.Scanln(&response)
+	if err != nil {
+		return false
+	}
+	response = strings.ToLower(strings.TrimSpace(response))
+	return response == "y" || response == "yes"
+}
+
+func presetAttachImage(name, imgPath string) error {
+	scriptPath, ok := presetScriptPath(name)
+	if !ok {
+		return fmt.Errorf("preset %q not found", name)
+	}
+
+	dir := filepath.Dir(scriptPath)
+	st, err := os.Stat(imgPath)
+	if err != nil {
+		return fmt.Errorf("source image not found: %w", err)
+	}
+
+	ext := strings.ToLower(filepath.Ext(imgPath))
+	validExt := false
+	for _, v := range []string{".png", ".jpg", ".jpeg", ".gif"} {
+		if ext == v {
+			validExt = true
+			break
+		}
+	}
+	if !validExt {
+		return fmt.Errorf("unsupported image format: %s (use .png, .jpg, or .gif)", ext)
+	}
+
+	// Destination now uses the source's extension
+	dst := filepath.Join(dir, name+ext)
+
+	return copyFile(imgPath, dst, st.Mode())
+}
+
+var HEADER_HEIGHT = 10
+
+var ALLOWED_CATEGORIES = []string{"Animation", "Dashboard", "Ambiance", "System", "Productivity", "Misc"}
+
+func parseMetadata(path string) PresetMetadata {
+	f, err := os.Open(path)
+	if err != nil {
+		return PresetMetadata{}
+	}
+	defer f.Close()
+
+	meta := PresetMetadata{Category: "Misc"} // Default to Misc immediately
+	buf := make([]byte, 1024)
+	n, _ := f.Read(buf)
+	content := string(buf[:n])
+
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+		
+		clean := strings.TrimPrefix(line, "#")
+		parts := strings.SplitN(clean, ":", 2)
+		if len(parts) < 2 {
+			continue
+		}
+
+		key := strings.ToLower(strings.TrimSpace(parts[0]))
+		val := strings.TrimSpace(parts[1])
+
+		switch key {
+		case "name":
+			meta.Name = val
+		case "description":
+			meta.Description = val
+		case "author":
+			meta.Author = val
+		case "category":
+			isValid := false
+			formattedVal := strings.Title(strings.ToLower(val)) // Normalize to Title Case
+			for _, allowed := range ALLOWED_CATEGORIES {
+				if formattedVal == allowed {
+					meta.Category = allowed
+					isValid = true
+					break
+				}
+			}
+			if !isValid {
+				meta.Category = "Misc"
+			}
+		}
+	}
+	return meta
+}
+
+func setMasterPTYSizeFromMaxPaneLocked() {
+	if currentPty == nil {
+		return
+	}
+
+	mw, _, err := tmux.MaxPaneSize()
+	if err != nil || mw <= 0 {
+		cw, _, _ := tmux.CurrentClientSize()
+		if cw <= 0 {
+			mw = 80
+		} else {
+			mw = cw
+		}
+	}
+
+	_ = pty.Setsize(currentPty, &pty.Winsize{
+		Rows: uint16(HEADER_HEIGHT),
+		Cols: uint16(mw),
+	})
+
+	if currentCmd != nil && currentCmd.Process != nil {
+		_ = currentCmd.Process.Signal(syscall.SIGWINCH)
+	}
+}
+
 func main() {
+	setupSignalHandler()
+
+	defer func() {
+        if r := recover(); r != nil {
+            fmt.Fprintf(os.Stderr, "tuiwall panic: %v\n", r)
+            _ = disable() 
+            os.Exit(1)
+        }
+    	}()
 
 	if len(os.Args) < 2 {
 		usage()
@@ -30,7 +336,6 @@ func main() {
 	switch os.Args[1] {
 	case "enable":
 	mustInTmux()
-    	// once we're in tmux, continue normally:
     	exe := tmux.MustExecutablePath()
     	if err := enable(exe); err != nil {
         	fatal(err)
@@ -68,7 +373,15 @@ case "set":
 		if strings.TrimSpace(preset) == "" {
 			preset = "clock"
 		}
+
+		heightStr, err := tmux.GetGlobalOption("@tuiwall_height")
+
+    if strings.TrimSpace(heightStr) == "" || err != nil {  
+        heightStr = "10" // Default fallback
+    }
+
 		fmt.Printf("enabled=%s preset=%s\n", strings.TrimSpace(enabled), strings.TrimSpace(preset))
+
 	case "render":
 		if len(os.Args) < 3 {
 			os.Exit(2)
@@ -79,7 +392,7 @@ case "set":
 		runMaster()
 	case "_mirror":
 		runMirror()
-	case "list":
+case "list":
     presets, err := listPresets()
     if err != nil {
         fatal(err)
@@ -88,11 +401,83 @@ case "set":
         fmt.Println("no presets found")
         return
     }
-    for _, p := range presets {
-        fmt.Println(p)
+
+    termWidth := 80 // Default fallback
+    if w, _, err := tmux.CurrentClientSize(); err == nil && w > 0 {
+        termWidth = w
     }
+
+    // Name (15), Category (12), Spacing/Pipes (5)
+    nameWidth := 15
+    catWidth := 12
+    descLimit := termWidth - nameWidth - catWidth - 5
+    if descLimit < 10 {
+        descLimit = 10 // Sanity floor
+    }
+
+    var sb strings.Builder
+    header := fmt.Sprintf("%-15s %-12s %s\n", "PRESET", "CATEGORY", "DESCRIPTION")
+    sb.WriteString(header)
+    sb.WriteString(strings.Repeat("-", len(header)) + "\n")
+
+    for _, p := range presets {
+        cat := p.Category
+        if cat == "" {
+            cat = "Misc"
+        }
+        
+        // Truncate name if it somehow exceeds 15 chars
+        displayName := p.Name
+        if len(displayName) > nameWidth {
+            displayName = displayName[:nameWidth-3] + "..."
+        }
+
+        // Smart truncate description based on terminal width
+        desc := p.Description
+        if len(desc) > descLimit {
+            desc = desc[:descLimit-3] + "..."
+        }
+        
+        sb.WriteString(fmt.Sprintf("%-15s %-12s %s\n", displayName, cat, desc))
+    }
+
+    // -F: quit if content fits on one screen
+    // -R: allow ANSI colors (if you add them later)
+    // -X: don't clear screen on exit
+    cmd := exec.Command("less", "-F", "-R", "-X")
+    cmd.Stdin = strings.NewReader(sb.String())
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    
+    if err := cmd.Run(); err != nil {
+        // Fallback: just print if less fails
+        fmt.Print(sb.String())
+    }
+
+case "search":
+    if len(os.Args) < 3 {
+        fatal(fmt.Errorf("usage: tuiwall search <keyword>"))
+    }
+    query := strings.ToLower(os.Args[2])
+    presets, _ := listPresets()
+
+    fmt.Printf("Results for '%s':\n", query)
+    for _, p := range presets {
+        if strings.Contains(strings.ToLower(p.Name), query) || 
+           strings.Contains(strings.ToLower(p.Category), query) {
+            fmt.Printf("%-15s [%s] %s\n", p.Name, p.Category, p.Description)
+        }
+    }
+case "record":
+    if len(os.Args) < 3 {
+        fatal(fmt.Errorf("usage: tuiwall record <preset-name>"))
+    }
+    runRecord(os.Args[2])
 	case "help":
 		usage()
+	case "version":
+   	 fmt.Println("tuiwall v0.1.0")
+    	return
 
 	case "reset":
 		// disable
@@ -108,6 +493,58 @@ case "set":
 		}
 		fmt.Println("tuiwall reset")
 
+	/*
+	case "height":
+	if len(os.Args) < 3 {
+		fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
+	}
+
+	newHeight, e := strconv.Atoi(strings.TrimSpace(os.Args[2]))
+
+	if e != nil {
+		fatal(e)
+	}
+
+	if newHeight < 2 || newHeight > 10 {
+		fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
+	}
+
+	if err := tmux.SetGlobalOption("@tuiwall_height", strings.TrimSpace(os.Args[2])); err != nil  {
+		fatal(err)
+	}
+
+	fmt.Println("set height to", newHeight)
+	HEADER_HEIGHT = newHeight
+
+enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled") 
+	if strings.TrimSpace(enabled) == "1" {
+		// disable
+		mustInTmux()
+		exe := tmux.MustExecutablePath()
+		if err := disable(); err != nil {
+			fatal(err)
+		}
+		
+		// reenable
+		if err:= enable(exe); err != nil {
+			fatal(err)
+		}
+	}
+	*/
+		
+	case "_reset_on_resize":
+		// disable
+		mustInTmux()
+		exe := tmux.MustExecutablePath()
+		if err := disable(); err != nil {
+			fatal(err)
+		}
+		
+		// reenable
+		if err:= enable(exe); err != nil {
+			fatal(err)
+		}
+		
 case "preset":
     if len(os.Args) < 3 {
         fatal(fmt.Errorf("usage: tuiwall preset <new|edit|path> ..."))
@@ -149,20 +586,81 @@ case "preset":
         }
         fmt.Println(p)
 
-    default: // Default for tuiwall preset command
+	case "info":
+    if len(os.Args) < 4 {
+        fatal(fmt.Errorf("usage: tuiwall preset info <preset-name>"))
+    }
+    name := os.Args[3]
+    path, err := presetScriptPathStrict(name)
+    if err != nil {
+        fatal(err)
+    }
+    meta := parseMetadata(path)
+
+    // Using a consistent width for labels (e.g., 14 characters)
+    fmt.Printf("%-14s %s\n", "Name:", meta.Name)
+    fmt.Printf("%-14s %s\n", "Author:", meta.Author)
+    fmt.Printf("%-14s %s\n", "Category:", meta.Category)
+
+    // Handle the description with wrapping
+    fmt.Printf("%-14s ", "Description:")
+    printWrapped(meta.Description, 15, 80) // Indent subsequent lines by 15
+    fmt.Println()
+
+	case "image":
+        if len(os.Args) < 5 {
+            fatal(fmt.Errorf("usage: tuiwall preset image <preset-name> <image-path>"))
+        }
+        name := strings.TrimSpace(os.Args[3])
+        img  := strings.TrimSpace(os.Args[4])
+        if err := presetAttachImage(name, img); err != nil {
+            fatal(err)
+        }
+
+    case "copy":
+	if len(os.Args) < 5 {
+		fatal(fmt.Errorf("usage: tuiwall preset copy <existing preses> <name>"))
+	}
+
+	copyName := strings.TrimSpace(os.Args[3])
+	name := strings.TrimSpace(os.Args[4])
+
+	if _,  err:= presetScriptPathStrict(copyName); err != nil{
+		fatal(err)
+	} 
+
+        if err := presetNewFromCopy(copyName, name); err != nil {
+		fatal(err)
+	}
+
+	/*
+	if err := o {
+		fatal(err)
+	}
+	*/
+
+    default: 
         fatal(fmt.Errorf("usage: tuiwall preset <new|edit|path> ..."))
     }
 
-	case "install":
-   		if len(os.Args) < 3 {
-     		  fatal(fmt.Errorf("usage: tuiwall install <path|git-url>"))
-   		}
+case "install":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: tuiwall install <path|git-url|name>"))
+		}
 
-    		src := strings.TrimSpace(os.Args[2])
-   		 if err := presetInstall(src); err != nil {
-    		    fatal(err)
-   		 }
+		src := strings.TrimSpace(os.Args[2])
 
+		fmt.Println("SECURITY WARNING: Presets contain Python scripts that run on your system.")
+		fmt.Printf("   Only install presets from authors you trust.\n\n")
+		
+		if !confirmAction(fmt.Sprintf("Do you want to install '%s'?", src)) {
+			fmt.Println("Installation aborted.")
+			return
+		}
+
+		if err := presetInstall(src); err != nil {
+			fatal(err)
+		}
 	case "uninstall":
 		if len(os.Args) < 3 {
         fatal(fmt.Errorf("usage: tuiwall uninstall <name>"))
@@ -177,38 +675,44 @@ case "preset":
     }
     fmt.Println("uninstalled preset:", name)
 
-case "upload":
-    if len(os.Args) < 3 {
-        fatal(fmt.Errorf("usage: tuiwall upload <preset-name> <git-remote-url> OR tuiwall upload <preset-name> --zip"))
-    }
-    name := strings.TrimSpace(os.Args[2])
-    if len(os.Args) >= 4 && os.Args[3] == "--zip" {
-        out, err := presetZip(name)
-        if err != nil { fatal(err) }
-        fmt.Println(out)
-        return
-    }
-    if len(os.Args) < 4 {
-        fatal(fmt.Errorf("usage: tuiwall upload <preset-name> <git-remote-url>"))
-    }
-    remote := strings.TrimSpace(os.Args[3])
-    if err := presetUploadToGit(name, remote); err != nil {
-        fatal(err)
-    }
+	case "upload":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: tuiwall upload <preset-name> [git-remote-url|--zip]"))
+		}
+		name := strings.TrimSpace(os.Args[2])
+
+		fmt.Println("PRIVACY WARNING: You are about to share your local preset code.")
+		fmt.Println("   Ensure your script doesn't contain hardcoded API keys, tokens, or personal paths.")
+		
+		if !confirmAction(fmt.Sprintf("Are you sure you want to upload/zip '%s'?", name)) {
+			fmt.Println("Upload aborted.")
+			return
+		}
+
+		if len(os.Args) >= 4 && os.Args[3] == "--zip" {
+			out, err := presetZip(name)
+			if err != nil { fatal(err) }
+			fmt.Println(out)
+			return
+		}
+
+		if len(os.Args) >= 4 && looksLikeGitRemote(os.Args[3]) {
+			remote := strings.TrimSpace(os.Args[3])
+			if err := presetUploadToGit(name, remote); err != nil {
+				fatal(err)
+			}
+			return
+		}
+
+		fmt.Printf("Preparing community repo contribution for '%s'...\n", name)
+		if err := communityRepoPR(name); err != nil {
+			fatal(err)
+		}
 
 case "_update-master-size":
-    // Get current max dimensions from tmux
-    mw, mh, _ := tmux.MaxPaneSize() 
-    if mw > 0 && mh > 0 {
-        // Update the master session size
-        _ = exec.Command("tmux", "resize-window", "-t", "tuiwall-master:0", "-x", fmt.Sprint(mw), "-y", "10").Run()
-        
-        // Signal the Master process to update PTY size
-        // We can do this via the socket or a simple signal if we track the PID
-        // For now, sending SIGWINCH to the Master process is the cleanest way:
         _ = exec.Command("pkill", "-SIGWINCH", "-f", "tuiwall _master").Run()
-    }
-	case "_ensure-header":
+return
+case "_ensure-header":
     mustInTmux()
 
 	if os.Getenv("TUIWALL_HEADER") == "1" {	
@@ -266,7 +770,7 @@ case "_update-master-size":
 }
 
 func usage() {
-	fmt.Println(`tuiwall (v0.1) - tmux "terminal wallpaper" header
+	fmt.Println(`tuiwall (v0.1.0) - tmux "terminal wallpaper" header
 
 Usage:
   tuiwall enable
@@ -274,11 +778,15 @@ Usage:
   tuiwall reset
   tuiwall set <preset>
   tuiwall list
+  tuiwall search <keyword>
   tuiwall status
-  tuiwall preset <new|edit|path> <preset>
+  tuiwall preset <new|edit|path|info> <preset>
+  tuiwall record <preset>
+  tuiwall preset image <preset> <image path>
+  tuiwall preset copy <existing preset> <preset> 
   tuiwall install <repo url>
   tuiwall uninstall <preset>
-  tuiwall upload <preset> <repo url>
+  tuiwall upload <preset> <repo url|NULL>
 `)
 }
 
@@ -311,11 +819,6 @@ func EnsureTmuxOrReexec(args []string) {
 	}
 	inner := strings.Join(parts, " ")
 
-	// 1) Ensure a session exists (detached)
-	// 2) Then attach to it
-	// 3) Kick off tuiwall enable inside it using run-shell (safe + explicit)
-	//
-	// If session already exists, new-session -Ad is fine.
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/bash"
@@ -372,86 +875,94 @@ func fatal(err error) {
 }
 
 func enable(exePath string) error {
+    if _, err := exec.LookPath("tmux"); err != nil {
+        return fmt.Errorf("tmux not found in PATH: please install tmux to use tuiwall")
+    }
+
+    if _, err := exec.LookPath("gh"); err != nil {
+        fmt.Println("Warning: GitHub CLI (gh) not found. Community features will be disabled.")
+    }
+
+    // Check for Python (trying python3 then python)
+    pyCmd := getPythonCmd()
+    if pyCmd == "" {
+        return fmt.Errorf("python not found: please install Python 3 to run tuiwall presets")
+    }
+
     enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
-    if strings.TrimSpace(enabled) == "1" {
+    hasSession := exec.Command("tmux", "has-session", "-t", "tuiwall-master").Run() == nil
+
+    if strings.TrimSpace(enabled) == "1" && hasSession {
         ensureHeadersAllWindows(exePath)
         return nil
     }
 
     _ = tmux.SetGlobalOption("@tuiwall_enabled", "1")
-    
-    // Create an empty output file for the mirrors to follow
-    _ = exec.Command("touch", "/tmp/tuiwall.out").Run()
+    _ = tmux.SetGlobalOption("@tuiwall_python", pyCmd)
 
-cw, ch, _ := tmux.CurrentClientSize()
-if cw <= 0 { cw = 80 }
-if ch <= 0 { ch = 24 }
-
-// Pick the largest existing pane as the default render size
-mw, mh, err := tmux.MaxPaneSize()
-if err != nil || mw <= 0 || mh <= 0 {
-	fmt.Println("mw & mh failed")
-	// Fallback: current client size
-	cw, ch, _ = tmux.CurrentClientSize()
-	if cw > 0 { mw = cw } else { mw = 80 }
-	if ch > 0 { mh = ch } else { mh = 24 }
-}
-
-masterCmd := fmt.Sprintf("%s _master", shellEscape(exePath))
+    mw, _, err := tmux.MaxPaneSize()
+    if err != nil || mw <= 0 {
+        // Fallback: current client size
+        cw, _, _ := tmux.CurrentClientSize()
+        if cw > 0 { mw = cw } else { mw = 80 }
+    }
 
     _ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
 
-err = exec.Command("tmux", "new-session", "-d",
-    "-x", fmt.Sprint(mw),
-    "-y", fmt.Sprint(mh),
-    "-s", "tuiwall-master",
-    masterCmd,
-).Run()
+    // Force TERM=xterm-256color so the Python presets know they have color support
+    masterCmd := fmt.Sprintf("TERM=xterm-256color %s _master", shellEscape(exePath))
 
-_ = exec.Command("tmux", "wait-for", "tuiwall_ready").Run()
-    
-if err != nil {
-        return err
+    err = exec.Command("tmux", "new-session", "-d",
+        "-x", fmt.Sprint(mw),
+        "-y", fmt.Sprint(HEADER_HEIGHT),
+        "-s", "tuiwall-master",
+        masterCmd,
+    ).Run()
+
+    if err != nil {
+        return fmt.Errorf("failed to start tuiwall-master session: %w", err)
     }
 
+    // Wait for the master socket to be ready before continuing
+    _ = exec.Command("tmux", "wait-for", "tuiwall_ready").Run()
+    
     installHooks(exePath)
     ensureHeadersAllWindows(exePath)
+    
     return nil
 }
 
 func disable() error {
     removeHooks()
+   
+    // Explicitly kill the master session to trigger the new cleanup logic
+    _ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
+ 
+    _ = exec.Command("tmux", "set-window-option", "window-style", "default").Run()
+    _ = exec.Command("tmux", "set-window-option", "window-active-style", "default").Run()
 
     wins, err := tmux.ListSessionWindowIDs()
     if err == nil {
-
-	// Completely kill all tuiwall instances
         for _, w := range wins {
-            // 1) kill by tag (authoritative)
-            if paneID, ok := tmux.FindHeaderPaneInWindow(w); ok && tmux.PaneExists(paneID) {
+            // Find and kill the header pane
+            if paneID, ok := tmux.FindHeaderPaneInWindow(w); ok {
+                // Before killing, try to clear the pane's styling
+                _ = exec.Command("tmux", "set-pane-option", "-t", paneID, "select-pane-color", "default").Run()
                 _ = tmux.KillPaneAsync(paneID)
             }
-
-            // 2) also kill by stored pointer (best effort)
+            
+            // Cleanup internal tmux variables
             key := headerKeyForWindow(w)
-            paneID, _ := tmux.GetGlobalOption(key)
-            paneID = strings.TrimSpace(paneID)
-            if paneID != "" && tmux.PaneExists(paneID) {
-                _ = tmux.KillPaneAsync(paneID)
-            }
-
-            // 3) clear flags/pointers/locks
             _ = tmux.UnsetGlobalOption(key)
             _ = tmux.UnsetGlobalOption(lockKeyForWindow(w))
         }
     }
 
-    _ = exec.Command("tmux", "set-window-option", "-t", "@", "-u", "window-style").Run()
-    _ = exec.Command("tmux", "set-window-option", "-t", "@", "-u", "window-active-style").Run()
-
     _ = tmux.UnsetGlobalOption("@tuiwall_enabled")
     _ = tmux.UnsetGlobalOption("@tuiwall_mode")
-    _ = tmux.UnsetGlobalOption("@tuiwall_exe")
+    
+    _ = exec.Command("tmux", "refresh-client", "-S").Run()
+    
     return nil
 }
 
@@ -483,7 +994,6 @@ func resolvePreset () string {
 
 func runHeaderWithWriter(out io.Writer) {
 	const (
-		HEADER_HEIGHT    = 10
 		DEBOUNCE         = 250 * time.Millisecond
 		RETRY_BACKOFF    = 1 * time.Second
 		TICK             = 250 * time.Millisecond
@@ -538,9 +1048,9 @@ func runHeaderWithWriter(out io.Writer) {
 			return
 		}
 
-		c := exec.Command("python3", script)
+		c := exec.Command(getPythonCmd(), script)
 		c.Stdin = os.Stdin
-		c.Stdout = out // REDIRECTED TO PIPE
+		c.Stdout = out 
 		c.Stderr = os.Stderr
 
 		if err := c.Start(); err != nil {
@@ -600,134 +1110,179 @@ func runHeaderWithWriter(out io.Writer) {
 	}
 }
 
-
-// We need to track the current command so the connection loop can signal it
 var currentCmd *exec.Cmd
 var cmdMu sync.Mutex
+var currentPty *os.File
 
 func startPresetWithPTY(preset string, clients *[]net.Conn, mu *sync.Mutex) {
-    // \x1b[2J: Clear entire screen
-    // \x1b[H: Move cursor to (1,1)
-    // \x1b[?25l: Hide cursor
-    // \x1b[39;49m: Reset colors to default
-    clearSeq := []byte("\x1b[2J\x1b[H\x1b[?25l\x1b[39;49m")
-    
-    mu.Lock()
-    for _, conn := range *clients {
-        conn.Write(clearSeq)
-    }
-    mu.Unlock()
+	mu.Lock()
+	clearCmd := []byte("\x1b[2J\x1b[H")
+	for _, conn := range *clients {
+		_, _ = conn.Write(clearCmd)
+	}
+	mu.Unlock()
 
-    script, _ := presetScriptPath(preset)
-    c := exec.Command("python3", "-u", script) // Use -u for unbuffered output
+	script, _ := presetScriptPath(preset)
+	c := exec.Command(getPythonCmd(), "-u", script)
 
-    f, err := pty.Start(c)
-    if err != nil {
-        return
-    }
-    defer f.Close()
+	f, err := pty.Start(c)
+	if err != nil {
+		return
+	}
+	defer f.Close()
 
-    cmdMu.Lock()
-    currentCmd = c
-    cmdMu.Unlock()
+	fd := int(f.Fd())
+	if term, err := unix.IoctlGetTermios(fd, getTermiosReq); err == nil {
+		term.Oflag |= unix.OPOST // Enable output processing
+		term.Oflag |= unix.ONLCR // Automatically map NL (\n) to CR-NL (\r\n)
+		_ = unix.IoctlSetTermios(fd, setTermiosReq, term)
+	}
 
-    // Sync PTY size immediately
-    cw, _, _ := tmux.CurrentClientSize()
-    if cw <= 0 { cw = 80 }
-    _ = pty.Setsize(f, &pty.Winsize{Rows: 10, Cols: uint16(cw)})
+	mw, _, err := tmux.MaxPaneSize()
+	if err != nil || mw <= 0 {
+		cw, _, _ := tmux.CurrentClientSize()
+		if cw <= 0 {
+			mw = 80 
+		} else {
+			mw = cw
+		}
+	}
 
-    buf := make([]byte, 32768)
-    for {
-        n, err := f.Read(buf)
-        if err != nil {
-            break 
-        }
+	_ = pty.Setsize(f, &pty.Winsize{
+		Rows: uint16(HEADER_HEIGHT),
+		Cols: uint16(mw),
+	})
 
-        payload := buf[:n]
+	cmdMu.Lock()
+	currentCmd = c
+	currentPty = f
+	cmdMu.Unlock()
 
-        mu.Lock()
-        activeClients := make([]net.Conn, 0, len(*clients))
-        for _, conn := range *clients {
-            _, err := conn.Write(payload)
-            if err == nil {
-                activeClients = append(activeClients, conn)
-            } else {
-                conn.Close()
-            }
-        }
-        *clients = activeClients
-        mu.Unlock()
-    }
+	buf := make([]byte, 32768)
+	for {
+		n, err := f.Read(buf)
+		if err != nil {
+			break
+		}
+		payload := buf[:n]
+
+		mu.Lock()
+		activeClients := make([]net.Conn, 0, len(*clients))
+		for _, conn := range *clients {
+			if _, err := conn.Write(payload); err == nil {
+				activeClients = append(activeClients, conn)
+			} else {
+				conn.Close()
+			}
+		}
+		*clients = activeClients
+		mu.Unlock()
+	}
 }
 
+func getSocketPath() string {
+    base := os.Getenv("XDG_RUNTIME_DIR")
+    if base == "" {
+        base = os.TempDir()
+    }
+    return filepath.Join(base, fmt.Sprintf("tuiwall-%d.sock", os.Getuid()))
+}
 
 func runMaster() {
-    socketPath := "/tmp/tuiwall.sock"
-    _ = os.Remove(socketPath)
+	socketPath := getSocketPath()
+	_ = os.Remove(socketPath)
 
-    l, err := net.Listen("unix", socketPath)
-    if err != nil {
-        fatal(err)
-    }
-    defer l.Close()
-
-    _ = exec.Command("tmux", "wait-for", "-S", "tuiwall_ready").Run()
-    var clients []net.Conn
-    var mu sync.Mutex
-
-    // Signal channel to catch window resizes
-    sigChan := make(chan os.Signal, 1)
-    signal.Notify(sigChan, syscall.SIGWINCH)
+	l, err := net.Listen("unix", socketPath)
+	if err != nil {
+		fatal(err)
+	}
+    
+    // Create a channel to listen for termination signals (Ctrl+C, tmux kill, etc.)
+    sigCleanup := make(chan os.Signal, 1)
+    signal.Notify(sigCleanup, os.Interrupt, syscall.SIGTERM)
 
     go func() {
-        for {
-            conn, err := l.Accept()
-            if err == nil {
-                mu.Lock()
-                clients = append(clients, conn)
-                mu.Unlock()
-
-                // Trigger a resize on new connection to sync initial state
-                sigChan <- syscall.SIGWINCH
-            }
+        <-sigCleanup
+        fmt.Println("\nShutting down tuiwall-master...")
+        
+        cmdMu.Lock()
+        if currentCmd != nil && currentCmd.Process != nil {
+            _ = currentCmd.Process.Kill()
         }
+        cmdMu.Unlock()
+
+        _ = os.Remove(socketPath)
+        
+        _ = l.Close()
+        os.Exit(0)
     }()
 
-    // Monitor for preset changes or resize signals
-    go func() {
-        lastPreset := resolvePreset()
-        for {
-            select {
-            case <-sigChan:
-                // When tmux resizes, update the PTY size
-                cmdMu.Lock()
-                if currentCmd != nil {
-                    cw, _, _ := tmux.CurrentClientSize()
-                    if cw > 0 {
-                        // Update PTY size so Python knows the new width
-                        _ = pty.Setsize(nil, &pty.Winsize{Rows: 10, Cols: uint16(cw)}) 
-                        _ = currentCmd.Process.Signal(syscall.SIGWINCH)
-                    }
-                }
-                cmdMu.Unlock()
-            case <-time.After(500 * time.Millisecond):
-                current := resolvePreset()
-                cmdMu.Lock()
-                if current != lastPreset && currentCmd != nil && currentCmd.Process != nil {
-                    _ = currentCmd.Process.Kill()
-                    lastPreset = current
-                }
-                cmdMu.Unlock()
-            }
-        }
-    }()
+	_ = exec.Command("tmux", "wait-for", "-S", "tuiwall_ready").Run()
+    
+	var clients []net.Conn
+	var mu sync.Mutex
 
-    for {
-        preset := resolvePreset()
-        startPresetWithPTY(preset, &clients, &mu)
-        time.Sleep(100 * time.Millisecond)
-    }
-} 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGWINCH)
+
+	// Listener for new mirror connections
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err == nil {
+				mu.Lock()
+				clients = append(clients, conn)
+				mu.Unlock()
+				sigChan <- syscall.SIGWINCH
+			}
+		}
+	}()
+
+	// Orchestrator for Resizing and Preset Switching
+	go func() {
+		lastPreset := resolvePreset()
+		for {
+			select {
+			case <-sigChan:
+				cmdMu.Lock()
+				if currentPty != nil {
+					mw, _, err := tmux.MaxPaneSize()
+					if err != nil || mw <= 0 {
+						cw, _, _ := tmux.CurrentClientSize()
+						mw = cw
+					}
+					if mw <= 0 { mw = 80 }
+
+					_ = pty.Setsize(currentPty, &pty.Winsize{
+						Rows: uint16(HEADER_HEIGHT),
+						Cols: uint16(mw),
+					})
+
+					if currentCmd != nil && currentCmd.Process != nil {
+						_ = currentCmd.Process.Signal(syscall.SIGWINCH)
+					}
+				}
+				cmdMu.Unlock()
+
+			case <-time.After(500 * time.Millisecond):
+				current := resolvePreset()
+				cmdMu.Lock()
+				if current != lastPreset && currentCmd != nil && currentCmd.Process != nil {
+					_ = currentCmd.Process.Kill()
+					lastPreset = current
+				}
+				cmdMu.Unlock()
+			}
+		}
+	}()
+
+	// Main execution loop
+	for {
+		preset := resolvePreset()
+		startPresetWithPTY(preset, &clients, &mu)
+		time.Sleep(100 * time.Millisecond) 
+	}
+}
 
 func sanitizeKey(k string) string {
 	// Turn status-format[0] into status_format_0
@@ -754,8 +1309,7 @@ func blankScreen() {
 
 func runHeader() {
 	const (
-		HEADER_HEIGHT  = 10
-		DEBOUNCE       = 250 * time.Millisecond
+		DEBOUNCE       = 350 * time.Millisecond
 		RETRY_BACKOFF  = 1 * time.Second
 		TICK           = 250 * time.Millisecond
 		FAST_EXIT_CUTOFF = 500 * time.Millisecond
@@ -765,7 +1319,7 @@ func runHeader() {
 
 	forceRedraw := func() {
    		 // Clear entire pane and redraw background
-   		 fmt.Print("\x1b[2J\x1b[H")
+   	// 	 fmt.Print("\x1b[2J\x1b[H")
 	}
 
 	blankScreen := func() {
@@ -826,7 +1380,7 @@ func runHeader() {
 			return
 		}
 
-		c := exec.Command("python3", script)
+		c := exec.Command(getPythonCmd(), script)
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
@@ -857,7 +1411,7 @@ func runHeader() {
 			}
 
 			if time.Since(started) < FAST_EXIT_CUTOFF {
-				nextStartAfter = time.Now().Add(RETRY_BACKOFF)
+				// nextStartAfter = time.Now().Add(RETRY_BACKOFl)
 			}
 		}(c, startedAt)
 	}
@@ -869,12 +1423,11 @@ func runHeader() {
 		for s := range sig {
 			switch s {
 			case syscall.SIGWINCH:
-				// Don't restart the renderer on resize — just enforce height.
 				if paneID != "" {
 					_ = tmux.ResizePaneHeight(paneID, HEADER_HEIGHT)
 				}
 
-				forceRedraw()
+				 forceRedraw()
 			default:
 				// Exit cleanup
 				killChild()
@@ -897,20 +1450,17 @@ func runHeader() {
 
 		// preset switch requested
 		if desired != curPreset {
-			// start / update pending
 			if desired != pendingPreset {
 				pendingPreset = desired
 				pendingSince = now
 				switchBlanked = false
 			}
 
-			// During waiting/backoff, blank ONCE (no jitter).
 			if !switchBlanked {
 				blankScreen()
 				switchBlanked = true
 			}
 
-			// If stable long enough AND not in backoff, start it.
 			if now.Sub(pendingSince) >= DEBOUNCE && now.After(nextStartAfter) {
 				startPreset(pendingPreset)
 				pendingPreset = ""
@@ -923,7 +1473,6 @@ func runHeader() {
 		pendingPreset = ""
 		switchBlanked = false
 
-		// If python died (or never started) and we're past backoff, restart.
 		if cmd == nil && curPreset != "" && now.After(nextStartAfter) {
    			 if _, ok := presetScriptPath(curPreset); ok {
        			 	startPreset(curPreset)
@@ -932,9 +1481,8 @@ func runHeader() {
 	}
 }
 
-
 func renderFallbackHeader(preset string) {
-	const H = 10
+	var H = HEADER_HEIGHT 
 	prev := make([]string, H)
 
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -969,47 +1517,49 @@ func renderFallbackHeader(preset string) {
 	}
 }
 
-func listPresets() ([]string, error) {
+func listPresets() ([]PresetMetadata, error) {
 	seen := map[string]bool{}
-	out := []string{}
+	var out []PresetMetadata 
 
 	for _, dir := range presetDirs() {
 		scanPresetDir(dir, seen, &out)
 	}
 
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
 	return out, nil
 }
 
-func scanPresetDir(dir string, seen map[string]bool, out *[]string) {
+func scanPresetDir(dir string, seen map[string]bool, out *[]PresetMetadata) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 
 	for _, e := range entries {
+		var scriptPath string
 		name := e.Name()
 
 		if e.IsDir() {
-			// directory preset: <name>/<name>.py (we don't verify here; keep it fast)
-			if name != "" && !seen[name] {
-				seen[name] = true
-				*out = append(*out, name)
-			}
-			continue
+			scriptPath = filepath.Join(dir, name, name+".py")
+		} else if strings.HasSuffix(name, ".py") {
+			scriptPath = filepath.Join(dir, name)
+			name = strings.TrimSuffix(name, ".py")
 		}
 
-		// flat preset: <name>.py
-		if strings.HasSuffix(name, ".py") {
-			base := strings.TrimSuffix(name, ".py")
-			if validPresetName(base) && base != "template" && !seen[base] {
-				seen[base] = true
-				*out = append(*out, base)
+		if scriptPath != "" && validPresetName(name) && name != "template" && !seen[name] {
+			if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
+				meta := parseMetadata(scriptPath)
+				if meta.Name == "" {
+					meta.Name = name
+				}
+				*out = append(*out, meta)
+				seen[name] = true
 			}
 		}
 	}
 }
-
 
 func presetScriptPath(preset string) (string, bool) {
 	for _, dir := range presetDirs() {
@@ -1026,35 +1576,27 @@ func presetScriptPath(preset string) (string, bool) {
 	return "", false
 }
 
-
 func presetDirs() []string {
 	dirs := []string{}
 
-	// 0) explicit override
 	if d := strings.TrimSpace(os.Getenv("TUIWALL_PRESET_DIR")); d != "" {
 		dirs = append(dirs, d)
 	}
 
-	// 1) user config (~/.config/tuiwall/presets on many systems)
 	if cfg, err := os.UserConfigDir(); err == nil && cfg != "" {
 		dirs = append(dirs, filepath.Join(cfg, "tuiwall", "presets"))
 	}
 
-	// 2) standard shared install locations (good for brew / system installs)
 	dirs = append(dirs,
-		"/usr/local/share/tuiwall/presets",
+		"/usr/local/share/tuiwall/presets",    // Manual Linux / Intel Mac
+		"/usr/share/tuiwall/presets",          // Linux Distro Packages
 		"/opt/homebrew/share/tuiwall/presets", // Apple Silicon Homebrew
 	)
 
-	// 3) presets next to the binary (works for “single folder app” installs)
+	// Useful for "portable" installs where the user just downloads a folder.
 	if exe, err := os.Executable(); err == nil {
 		base := filepath.Dir(exe)
 		dirs = append(dirs, filepath.Join(base, "presets"))
-	}
-
-	// 4) dev workflow: presets in repo relative to cwd
-	if cwd, err := os.Getwd(); err == nil {
-		dirs = append(dirs, filepath.Join(cwd, "presets"))
 	}
 
 	return dirs
@@ -1066,38 +1608,40 @@ func headerKeyForWindow(windowID string) string {
 
 // Ensure header exists for one window
 func ensureHeaderForWindow(exePath, windowID string) {
-    const HEADER_HEIGHT = 10
-
-    // 1. IMMEDIATE CHECK: If a header already exists, BAIL OUT.
-    // This is the most important line to stop the infinite loop.
     if existingID, ok := tmux.FindHeaderPaneInWindow(windowID); ok {
         _ = tmux.ResizePaneHeight(existingID, HEADER_HEIGHT)
         return 
     }
 
-    // 2. CONCURRENCY LOCK: Prevent hooks from overlapping
     lockKey := fmt.Sprintf("@tuiwall_lock_%s", windowID)
     lock, _ := tmux.GetGlobalOption(lockKey)
     if strings.TrimSpace(lock) == "1" {
         return
     }
     _ = tmux.SetGlobalOption(lockKey, "1")
-    // Ensure we unlock when we are done
     defer tmux.UnsetGlobalOption(lockKey)
 
-    // 3. THE COMMAND: Passive mirror (reading from a shared file is the most stable)
-    // We use tail -f because multiple panes can read the same file without conflict.
     mirrorCmd := shellEscape(exePath) + " _mirror"
+    
+    // Command: tmux split-window -t <win> -v -b -l <height> -P -F "#{pane_id}" <cmd>
+    cmd := exec.Command("tmux", "split-window", 
+        "-t", windowID,
+	"-d", // Detached 
+        "-v", "-b", // Top split
+        "-l", strconv.Itoa(HEADER_HEIGHT), 
+        "-P", "-F", "#{pane_id}", 
+        mirrorCmd,
+    )
 
-    // 4. SPLIT: This will trigger the hook again, but the check in Step 1 will catch it.
-    newPane, err := tmux.SplitTopPaneInWindow(windowID, HEADER_HEIGHT, mirrorCmd)
+    out, err := cmd.Output()
     if err != nil {
         return
     }
 
-    // 5. TAG: Mark this pane as a header so FindHeaderPaneInWindow sees it next time.
-    _ = tmux.SetPaneOption(newPane, "@tuiwall_header", "1")
+    newPaneID := strings.TrimSpace(string(out))
+    _ = tmux.SetPaneOption(newPaneID, "@tuiwall_header", "1")
 }
+
 // Ensure headers exist for all windows across server
 func ensureHeadersAllWindows(exePath string) {
 	wins, err := tmux.ListSessionWindowIDs()
@@ -1110,7 +1654,6 @@ func ensureHeadersAllWindows(exePath string) {
 }
 
 func respawnAllHeaders(exePath string) {
-	const HEADER_HEIGHT = 10
 
 	// Command to run inside each header pane
 	cmd := "TUIWALL_HEADER=1 " + shellEscape(exePath) + " _header"
@@ -1135,7 +1678,7 @@ func respawnAllHeaders(exePath string) {
 		_ = exec.Command(
 			"tmux",
 			"respawn-pane",
-			"-k",           // kill existing process
+			"-k",           
 			"-t", paneID,
 			cmd,
 		).Run()
@@ -1145,10 +1688,11 @@ func respawnAllHeaders(exePath string) {
 }
 
 // Ensure all tmux windows have hooks
-// Synchronization
 func installHooks(exePath string) {
 	// Store exe path globally so hooks keep working even if PATH differs
 	_ = tmux.SetGlobalOption("@tuiwall_exe", exePath)
+
+	_ = tmux.SetGlobalOption("@tuiwall_height", strconv.Itoa(HEADER_HEIGHT))
 
 	inner := "TUIWALL_HOOK=1 " + shellEscape(exePath) + " _ensure-header"
 	hookCmd := "run-shell -b " + shellEscape(inner)
@@ -1159,13 +1703,16 @@ func installHooks(exePath string) {
 	_ = tmux.SetHookGlobal("client-attached", hookCmd)
 
 	resizeCmd := "run-shell -b " + shellEscape("tmux resize-window -t tuiwall-master:0 -x #{client_width} -y #{client_height} >/dev/null 2>&1 || true")
-_ = tmux.SetHookGlobal("client-resized", resizeCmd)
+	_ = tmux.SetHookGlobal("client-resized", resizeCmd)
 }
 
 // Cleanup Hooks
 func removeHooks() {
 	_ = tmux.UnsetHookGlobal("after-new-window")
 	_ = tmux.UnsetHookGlobal("after-split-window")
+	_ = tmux.UnsetHookGlobal("client-attached")
+	_ = tmux.UnsetHookGlobal("client-resized")
+	_ = tmux.UnsetHookGlobal("tuiwall-height")
 }
 
 func lockKeyForWindow(windowID string) string {
@@ -1216,11 +1763,11 @@ func presetNewFromTemplate(name string) error {
     // Find the existing "template" preset in any of your presetDirs() locations.
     templateScript, err := presetScriptPathStrict("template")
     if err != nil {
-        return fmt.Errorf("missing template preset: %w", err)
+        return fmt.Errorf("missing template preset: %w\n Run: tuiwall install template", err)
     }
     templateDir := filepath.Dir(templateScript)
 
-    // Destination is always user config dir so users have a single place to edit/share.
+    // Destination is always user config dir
     home, err := presetHomeDir()
     if err != nil {
         return err
@@ -1249,10 +1796,14 @@ func presetNewFromTemplate(name string) error {
             return err
         }
     } else {
-        // Enforce convention: must end up with <name>.py
         if _, err2 := os.Stat(newPy); err2 != nil {
-            return fmt.Errorf("template preset must include template.py (so it can be renamed)")
+            return fmt.Errorf("template preset must include template.py")
         }
+    }
+
+    // Ensure the new script is actually runnable by the OS
+    if err := ensureExecutable(newPy); err != nil {
+        return fmt.Errorf("failed to set executable permissions: %w", err)
     }
 
     _ = replaceInFile(newPy, map[string]string{
@@ -1261,6 +1812,66 @@ func presetNewFromTemplate(name string) error {
 
     return nil
 }
+
+func presetNewFromCopy(copyName string, name string) error {
+    copyName = strings.TrimSpace(copyName)
+    name = strings.TrimSpace(name)
+    if !validPresetName(name) {
+        return fmt.Errorf("invalid preset name %q (use letters/numbers/_/-)", name)
+    }
+    if name == copyName {
+        return fmt.Errorf("preset name %q is reserved", name)
+    }
+
+    // Find the existing "template" preset in any of your presetDirs() locations.
+    copyScript, err := presetScriptPathStrict(copyName)
+    if err != nil {
+        return fmt.Errorf("missing template preset: %w", err)
+    }
+    copyPresetDir := filepath.Dir(copyScript)
+
+    // Destination is always user config dir so users have a single place to edit/share.
+    home, err := presetHomeDir()
+    if err != nil {
+        return err
+    }
+    dstDir := filepath.Join(home, name)
+
+    if _, err := os.Stat(dstDir); err == nil {
+        return fmt.Errorf("preset %q already exists at %s", name, dstDir)
+    }
+
+    if err := os.MkdirAll(home, 0o755); err != nil {
+        return err
+    }
+
+    // Copy template/ -> ~/.config/tuiwall/presets/<name>/
+    if err := copyDir(copyPresetDir, dstDir); err != nil {
+        return err
+    }
+
+    // Rename template.py -> <name>.py
+    oldPy := filepath.Join(dstDir, copyName + ".py")
+    newPy := filepath.Join(dstDir, name+".py")
+
+    if _, err := os.Stat(oldPy); err == nil {
+        if err := os.Rename(oldPy, newPy); err != nil {
+            return err
+        }
+    } else {
+        // Enforce convention: must end up with <name>.py
+        if _, err2 := os.Stat(newPy); err2 != nil {
+            return fmt.Errorf("template preset must include template.py (so it can be renamed)")
+        }
+    }
+
+    _ = replaceInFile(newPy, map[string]string{
+	copyName: name,
+    })
+
+    return nil
+}
+
 
 func copyDir(src, dst string) error {
     return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
@@ -1365,16 +1976,25 @@ func presetUninstall(name string) error {
  
 func presetInstall(src string) error {
     src = strings.TrimSpace(src)
+    if src == "template" {
+        return installEmbeddedTemplate()
+    }
+
     if src == "" {
-        return fmt.Errorf("usage: tuiwall install <path|git-url>")
+        return fmt.Errorf("usage: tuiwall install <name|path|git-url>")
     }
 
-    // Heuristic: treat as URL/remote if it looks like one
+    isShortName := !strings.Contains(src, "/") && !strings.Contains(src, ".") && !strings.Contains(src, "@")
+    
+    if isShortName {
+        fmt.Printf("--> Fetching '%s' from community repository...\n", src)
+        return presetInstallFromGit("https://github.com/Mug-Costanza/tuiwall-presets.git", src)
+    }
+
     if looksLikeGitRemote(src) {
-        return presetInstallFromGit(src)
+        return presetInstallFromGit(src, "") 
     }
 
-    // Otherwise local path
     return presetInstallFromPath(src)
 }
 
@@ -1386,10 +2006,6 @@ func looksLikeGitRemote(s string) bool {
         strings.HasSuffix(s, ".git")
 }
 
-// Install a preset from a local directory path.
-// Contract:
-//   - directory name is preset name (last path segment)
-//   - must contain <name>.py OR a single .py at root (handled elsewhere)
 func presetInstallFromPath(path string) error {
     path = filepath.Clean(path)
 
@@ -1418,33 +2034,38 @@ func presetInstallFromPath(path string) error {
     return installDirToUserHome(name, path)
 }
 
-func presetInstallFromGit(remote string) error {
-    if _, err := exec.LookPath("git"); err != nil {
-        return fmt.Errorf("git not found in PATH (required for installing from URLs)")
-    }
+func presetInstallFromGit(remote string, requestedFolder string) error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("git not found in PATH (required for installing from URLs)")
+	}
 
-    tmp, err := os.MkdirTemp("", "tuiwall-install-*")
-    if err != nil {
-        return err
-    }
-    defer os.RemoveAll(tmp)
+	tmp, err := os.MkdirTemp("", "tuiwall-install-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
 
-    clone := exec.Command("git", "clone", "--depth", "1", remote, tmp)
-    clone.Stdin = os.Stdin
-    clone.Stdout = os.Stdout
-    clone.Stderr = os.Stderr
-    if err := clone.Run(); err != nil {
-        return fmt.Errorf("git clone failed: %w", err)
-    }
+	fmt.Println("--> Connecting to remote...")
+	if requestedFolder != "" {
+		cloneArgs := []string{"clone", "--depth", "1", "--filter=blob:none", "--sparse", remote, tmp}
+		if err := exec.Command("git", cloneArgs...).Run(); err != nil {
+			return fmt.Errorf("git clone failed: %w", err)
+		}
+		target := filepath.Join("presets", requestedFolder)
+		_ = exec.Command("git", "-C", tmp, "sparse-checkout", "set", target).Run()
+	} else {
+		cloneArgs := []string{"clone", "--depth", "1", remote, tmp}
+		if err := exec.Command("git", cloneArgs...).Run(); err != nil {
+			return fmt.Errorf("git clone failed: %w", err)
+		}
+	}
 
-    // Find installable preset directory inside repo.
-    presetDir, presetName, err := findPresetDirInRepo(tmp, remote)
-    if err != nil {
-        return err
-    }
+	presetDir, presetName, err := findPresetDirInRepo(tmp, remote)
+	if err != nil {
+		return err
+	}
 
-    // Copy into user preset home
-    return installDirToUserHome(presetName, presetDir)
+	return installDirToUserHome(presetName, presetDir)
 }
 
 func installDirToUserHome(name, srcDir string) error {
@@ -1471,112 +2092,76 @@ func installDirToUserHome(name, srcDir string) error {
 }
 
 func findPresetDirInRepo(repoPath string, remote string) (dir string, name string, err error) {
-    // 1) derive a default name from repo URL (tuiwall-preset-bar -> bar, or repo -> repo)
-    derived := derivePresetNameFromRemote(remote)
-    if derived != "" && validPresetName(derived) && derived != "template" {
-        // Layout: <derived>/<derived>.py
-        d := filepath.Join(repoPath, derived)
-        s := filepath.Join(d, derived+".py")
-        if st, e := os.Stat(s); e == nil && !st.IsDir() {
-            return d, derived, nil
-        }
-        // Layout: root/<derived>.py
-        s2 := filepath.Join(repoPath, derived+".py")
-        if st, e := os.Stat(s2); e == nil && !st.IsDir() {
-            return repoPath, derived, nil
-        }
-    }
+	presetsDir := filepath.Join(repoPath, "presets")
+	if st, err := os.Stat(presetsDir); err == nil && st.IsDir() {
+		entries, _ := os.ReadDir(presetsDir)
+		for _, e := range entries {
+			if !e.IsDir() { continue }
+			n := e.Name()
+			if !validPresetName(n) || n == "template" { continue }
+			
+			d := filepath.Join(presetsDir, n)
+			s := filepath.Join(d, n+".py")
+			if st, e2 := os.Stat(s); e2 == nil && !st.IsDir() {
+				return d, n, nil
+			}
+		}
+	}
 
-    // 2) search presets/*/*/*.py pattern: presets/<x>/<x>.py
-    candidates := []struct {
-        dir  string
-        name string
-    }{}
+	rootEntries, _ := os.ReadDir(repoPath)
+	var dirCandidates []struct {
+		path string
+		name string
+	}
 
-    presetsDir := filepath.Join(repoPath, "presets")
-    entries, _ := os.ReadDir(presetsDir)
-    for _, e := range entries {
-        if !e.IsDir() {
-            continue
-        }
-        n := e.Name()
-        if !validPresetName(n) || n == "template" {
-            continue
-        }
-        d := filepath.Join(presetsDir, n)
-        s := filepath.Join(d, n+".py")
-        if st, e2 := os.Stat(s); e2 == nil && !st.IsDir() {
-            candidates = append(candidates, struct {
-                dir  string
-                name string
-            }{dir: d, name: n})
-        }
-    }
+	for _, e := range rootEntries {
+		if e.IsDir() {
+			n := e.Name()
+			// Ignore hidden dirs like .git and reserved names
+			if strings.HasPrefix(n, ".") || !validPresetName(n) || n == "template" {
+				continue 
+			}
+			scriptCheck := filepath.Join(repoPath, n, n+".py")
+			if st, err := os.Stat(scriptCheck); err == nil && !st.IsDir() {
+				dirCandidates = append(dirCandidates, struct{ path, name string }{
+					path: filepath.Join(repoPath, n),
+					name: n,
+				})
+			}
+		}
+	}
 
-    if len(candidates) == 1 {
-        return candidates[0].dir, candidates[0].name, nil
-    }
-    if len(candidates) > 1 {
-        // If derived matches one, prefer it.
-        if derived != "" {
-            for _, c := range candidates {
-                if c.name == derived {
-                    return c.dir, c.name, nil
-                }
-            }
-        }
-        names := []string{}
-        for _, c := range candidates {
-            names = append(names, c.name)
-        }
-        sort.Strings(names)
-        return "", "", fmt.Errorf("repo contains multiple presets (%s); clone manually and run: tuiwall install <path-to-one>", strings.Join(names, ", "))
-    }
+	if len(dirCandidates) == 1 {
+		return dirCandidates[0].path, dirCandidates[0].name, nil
+	}
 
-// 2.5) If repo root contains exactly one directory that looks like a preset, use it.
-rootEntries, _ := os.ReadDir(repoPath)
-dirCandidates := []string{}
-for _, e := range rootEntries {
-    if e.IsDir() {
-        n := e.Name()
-        if validPresetName(n) && n != "template" {
-            // check <n>/<n>.py
-            s := filepath.Join(repoPath, n, n+".py")
-            if st, e2 := os.Stat(s); e2 == nil && !st.IsDir() {
-                dirCandidates = append(dirCandidates, n)
-            }
-        }
-    }
-}
-if len(dirCandidates) == 1 {
-    n := dirCandidates[0]
-    return filepath.Join(repoPath, n), n, nil
-}
+	derived := derivePresetNameFromRemote(remote)
+	if derived != "" && validPresetName(derived) && derived != "template" {
+		d := filepath.Join(repoPath, derived)
+		s := filepath.Join(d, derived+".py")
+		if st, e := os.Stat(s); e == nil && !st.IsDir() {
+			return d, derived, nil
+		}
+		s2 := filepath.Join(repoPath, derived+".py")
+		if st, e := os.Stat(s2); e == nil && !st.IsDir() {
+			return repoPath, derived, nil
+		}
+	}
 
+	var pyFiles []string
+	for _, e := range rootEntries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".py") {
+			pyFiles = append(pyFiles, e.Name())
+		}
+	}
+	if len(pyFiles) == 1 {
+		base := strings.TrimSuffix(pyFiles[0], ".py")
+		if validPresetName(base) && base != "template" {
+			return repoPath, base, nil
+		}
+	}
 
-    // 3) last resort: if repo root contains exactly one *.py, install that as derived name (or file base)
-    rootEntries, _ = os.ReadDir(repoPath)
-    pyFiles := []string{}
-    for _, e := range rootEntries {
-        if e.IsDir() {
-            continue
-        }
-        if strings.HasSuffix(e.Name(), ".py") {
-            pyFiles = append(pyFiles, e.Name())
-        }
-    }
-    if len(pyFiles) == 1 {
-        base := strings.TrimSuffix(pyFiles[0], ".py")
-        if validPresetName(base) && base != "template" {
-            return repoPath, base, nil
-        }
-        if derived != "" && validPresetName(derived) && derived != "template" {
-            // We'll install as derived, but we should ensure <derived>.py exists (it doesn't),
-            return "", "", fmt.Errorf("found single python file %q but it doesn't match a safe preset name", pyFiles[0])
-        }
-    }
-
-    return "", "", fmt.Errorf("could not find an installable preset in repo. expected one of:\n- <name>/<name>.py\n- <name>.py at repo root\n- presets/<name>/<name>.py")
+	return "", "", fmt.Errorf("could not find an installable preset in repo. expected one of:\n- <name>/<name>.py\n- <name>.py at repo root\n- presets/<name>/<name>.py")
 }
 
 func derivePresetNameFromRemote(remote string) string {
@@ -1586,8 +2171,6 @@ func derivePresetNameFromRemote(remote string) string {
     r = strings.TrimSuffix(r, ".git")
 
     // Take last path segment after / or :
-    // https://github.com/foo/tuiwall-preset-bar -> tuiwall-preset-bar
-    // git@github.com:foo/tuiwall-preset-bar -> tuiwall-preset-bar
     seg := r
     if i := strings.LastIndex(seg, "/"); i >= 0 {
         seg = seg[i+1:]
@@ -1636,68 +2219,142 @@ func presetInstalledDirStrict(name string) (string, error) {
 }
 
 func presetUploadToGit(name, remote string) error {
-    name = strings.TrimSpace(name)
-    remote = strings.TrimSpace(remote)
+	name = strings.TrimSpace(name)
+	remote = strings.TrimSpace(remote)
 
-    if name == "template" {
-        return fmt.Errorf("refusing to upload %q (template is reserved)", name)
-    }
-    if remote == "" {
-        return fmt.Errorf("missing remote url")
-    }
+	if name == "template" {
+		return fmt.Errorf("refusing to upload %q (template is reserved)", name)
+	}
+	if remote == "" {
+		return fmt.Errorf("missing remote url")
+	}
 
-    if _, err := exec.LookPath("git"); err != nil {
-        return fmt.Errorf("git not found in PATH (required for upload)")
-    }
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("git not found in PATH (required for upload)")
+	}
 
-    // Locate installed preset (user-owned)
-    srcDir, err := presetInstalledDirStrict(name)
-    if err != nil {
-        return err
-    }
+	scriptPath, ok := presetScriptPath(name)
+	if !ok {
+		return fmt.Errorf("preset %q not found in any known directory", name)
+	}
+	srcDir := filepath.Dir(scriptPath)
 
-    // Build a repo layout that your installer will detect:
-    // repo/
-    //   <name>/
-    //     <name>.py
-    //     assets...
-    tmp, err := os.MkdirTemp("", "tuiwall-upload-*")
-    if err != nil {
-        return err
-    }
-    defer os.RemoveAll(tmp)
+	tmp, err := os.MkdirTemp("", "tuiwall-upload-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
 
-    repoRoot := tmp
-    stagedPresetDir := filepath.Join(repoRoot, name)
-    if err := copyDir(srcDir, stagedPresetDir); err != nil {
-        return err
-    }
+	stagedPresetDir := filepath.Join(tmp, name)
+	if err := copyDir(srcDir, stagedPresetDir); err != nil {
+		return err
+	}
 
-    // git init, commit, push
-    if err := runGit(repoRoot, "init"); err != nil { return err }
+	if err := runGit(tmp, "git", "init"); err != nil { return err }
+	_ = runGit(tmp, "git", "checkout", "-b", "main")
+	if err := runGit(tmp, "git", "add", "."); err != nil { return err }
+	
+	commitMsg := "Add tuiwall preset " + name
+	if err := runGit(tmp, "git", "commit", "-m", commitMsg); err != nil {
+		return fmt.Errorf("git commit failed: %w", err)
+	}
 
-    _ = runGit(repoRoot, "checkout", "-b", "main")
+	_ = runGit(tmp, "git", "remote", "add", "origin", remote)
+	if err := runGit(tmp, "git", "push", "-u", "origin", "main", "--force"); err != nil {
+		return fmt.Errorf("git push failed: %w", err)
+	}
 
-    if err := runGit(repoRoot, "add", "."); err != nil { return err }
-    if err := runGit(repoRoot, "commit", "-m", "Add tuiwall preset "+name); err != nil {
-        return fmt.Errorf("git commit failed (do you have user.name/user.email set?): %w", err)
-    }
-
-    _ = runGit(repoRoot, "remote", "remove", "origin") 
-    if err := runGit(repoRoot, "remote", "add", "origin", remote); err != nil { return err }
-
-    if err := runGit(repoRoot, "push", "-u", "origin", "main"); err != nil {
-        return fmt.Errorf("git push failed (auth/remote?): %w", err)
-    }
-
-    fmt.Println("uploaded preset:", name)
-    fmt.Println("remote:", remote)
-    fmt.Println("install with: tuiwall install", remote)
-    return nil
+	fmt.Println("Uploaded preset to:", remote)
+	return nil
 }
 
-func runGit(dir string, args ...string) error {
-    cmd := exec.Command("git", args...)
+func communityRepoPR(name string) error {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("github CLI ('gh') not found. Please install it to use community features")
+	}
+
+	out, err := exec.Command("gh", "api", "user", "-q", ".login").Output()
+	if err != nil {
+		return fmt.Errorf("failed to verify GitHub identity. Please run: gh auth login")
+	}
+	currentUser := strings.TrimSpace(string(out))
+
+	scriptPath, ok := presetScriptPath(name)
+	if !ok {
+		return fmt.Errorf("preset %q not found in any known directory", name)
+	}
+	srcDir := filepath.Dir(scriptPath)
+
+	tmp, err := os.MkdirTemp("", "tuiwall-comm-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+
+	repoTarget := "Mug-Costanza/tuiwall-presets"
+	repoSSH := "git@github.com:Mug-Costanza/tuiwall-presets.git"
+
+	if currentUser == "Mug-Costanza" {
+		fmt.Println("--> Admin mode: Cloning directly...")
+		err = runGit("", "git", "clone", "--depth=1", repoSSH, tmp)
+	} else {
+		fmt.Println("--> Contributor mode: Forking community repo...")
+		err = runGit("", "gh", "repo", "fork", repoTarget, "--clone", "--", "--depth=1", tmp)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to prepare repository: %w", err)
+	}
+
+	dstDir := filepath.Join(tmp, "presets", name)
+	_ = os.MkdirAll(dstDir, 0755)
+	if err := copyDir(srcDir, dstDir); err != nil {
+		return fmt.Errorf("failed to stage code: %w", err)
+	}
+
+	extensions := []string{".gif", ".png", ".jpg", ".jpeg"}
+	var foundImg string
+	var imgInfo os.FileInfo
+
+	for _, ext := range extensions {
+		localImg := filepath.Join(srcDir, name+ext)
+		if st, err := os.Stat(localImg); err == nil {
+			foundImg = localImg
+			imgInfo = st
+			break
+		}
+	}
+
+	if foundImg != "" {
+		fmt.Printf("--> Including preview image (%s) from preset folder...\n", filepath.Ext(foundImg))
+		repoImgDir := filepath.Join(tmp, "images")
+		_ = os.MkdirAll(repoImgDir, 0755)
+
+		dstImgPath := filepath.Join(repoImgDir, name+filepath.Ext(foundImg))
+		_ = copyFile(foundImg, dstImgPath, imgInfo.Mode())
+	} else {
+		fmt.Println("--> No preview image found. Tip: Use 'vhs' to generate a demo.gif!")
+	}
+
+	branchName := "add-preset-" + name
+	_ = runGit(tmp, "git", "checkout", "-b", branchName)
+	_ = runGit(tmp, "git", "add", ".")
+	_ = runGit(tmp, "git", "commit", "-m", "New community preset: "+name)
+
+	fmt.Println("--> Pushing to your remote...")
+	if err := runGit(tmp, "git", "push", "-u", "origin", branchName); err != nil {
+		return fmt.Errorf("failed to push branch: %w", err)
+	}
+
+	fmt.Println("--> Creating Pull Request...")
+	return runGit(tmp, "gh", "pr", "create",
+		"--title", "Add "+name,
+		"--body", "Submitted via tuiwall CLI",
+		"--repo", repoTarget,
+	)
+}
+
+func runGit(dir string, name string, args ...string) error {
+    cmd := exec.Command(name, args...)
     cmd.Dir = dir
     cmd.Stdin = os.Stdin
     cmd.Stdout = os.Stdout
@@ -1759,33 +2416,38 @@ func presetZip(name string) (string, error) {
 }
 
 func runMirror() {
-    var conn net.Conn
-    var err error
-    
-    for i := 0; i < 15; i++ {
-        conn, err = net.Dial("unix", "/tmp/tuiwall.sock")
-        if err == nil {
-            break
-        }
-        time.Sleep(200 * time.Millisecond)
-    }
+	var conn net.Conn
+	var err error
+	socketPath := getSocketPath()
 
-    if err != nil {
-        return
-    }
-    defer conn.Close()    
+	for i := 0; i < 15; i++ {
+		conn, err = net.Dial("unix", socketPath)
+		if err == nil { break }
+		time.Sleep(250 * time.Millisecond)
+	}
+	if err != nil { return }
+	defer conn.Close()
 
-    // \x1b[2J: Clear screen
-    // \x1b[H: Move cursor to home
-    // \x1b[?25l: Hide cursor
-    // \x1b[7l: Disable line wrapping (prevents overflow to next line)
-// Defensive Reset: 
-    // 1. Reset attributes 
-    // 2. Clear Screen 
-    // 3. Hide Cursor 
-    // 4. Disable Wrap
-    fmt.Print("\x1b[0m\x1b[2J\x1b[H\x1b[?25l\x1b[7l")
+	// Hide cursor (\x1b[?25l), disable wrap (\x1b[?7l), clear (\x1b[2J), home (\x1b[H)
+	fmt.Print("\x1b[?25l\x1b[?7l\x1b[2J\x1b[H")
 
-    _, _ = io.Copy(os.Stdout, conn)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGWINCH)
+	go func() {
+		for range sigChan {
+			paneID := os.Getenv("TMUX_PANE")
+			if paneID != "" {
+				_ = tmux.ResizePaneHeight(paneID, HEADER_HEIGHT)
+			}
+			_ = exec.Command("tuiwall", "_update-master-size").Run()
+		}
+	}()
+
+	if _, err := io.Copy(os.Stdout, conn); err != nil {
+		os.Exit(0)
+	}
 }
+
+
+
 

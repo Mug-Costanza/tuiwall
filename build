@@ -1,5 +1,7 @@
 #!/bin/bash
+# Point to the directory containing main.go
+GOOS=darwin GOARCH=arm64 go build -o tuiwall ./cmd/tuiwall
+# OR if your files are in the root:
+# GOOS=darwin GOARCH=arm64 go build -o tuiwall .
 
-go build -o tuiwall cmd/tuiwall/main.go
 sudo cp tuiwall /opt/homebrew/bin/
-

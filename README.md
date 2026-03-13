@@ -1,13 +1,10 @@
-# TUIWALL (v0.1)
+# TUIWALL (v0.1.0)
 
 ## EASY-INSTALL TERMINAL HEADER WALLPAPERS
 
 ### What is this?
 
-	* Tuiwall is a pseudo wallpaper engine for the terminal
-	* Essentially, tuiwall opens a 10-line tmux pane at the 
-		top of each terminal / tmux window and runs any 
-		custom Python curses script 
+	* Tuiwall creates persistent, animated, or informative headers at the top of your tmux windows. It allows you to customize the top ten lines of your terminal workspace with everything from CPU monitors, elaborate animated ASCII art, or even API-driven displays (live stock charts, weather reporting, etc.), all driven by simple Python scripts.
 
 ### Purpose
 	
@@ -15,40 +12,99 @@
 
 ### Dependencies
 
-	* Python3 (no external packages required)
-	* Tmux
-	* Git
+	* python (no external packages required)
+	* tmux
+	* git
+	* gh 
 	* Text editor (vi / vim / nvim, emacs, helix, nano) // Respects $EDITOR 
-						            // (otherwise, defualt is vi)
+						            // (otherwise, default is vi)
+	* vhs (for creating gifs)
 
 ### USAGE
 	
 	Enable / Disable header using
-		tuiwall enable / disable
+```bash
+	tuiwall enable / disable
+```
 
 	Quick reset (disable & enable) using
-		tuiwall reset
+```bash
+	tuiwall reset
+```			
 
 	Change presets using
-		tuiwall set clock / status
+```bash
+	tuiwall set clock / status
+```
 
 	List installed presets using
-		tuiwall list
+```bash
+	tuiwall list
+```
+
+	Search through installed presets using
+```bash
+	tuiwall search <keyword>
+```
 
 	Status report using
-		tuiwall status
+```bash
+	tuiwall status
+```
 
-	Install presets using
-		tuiwall install	<repo url>
+### INSTALLING / MANAGING PRESETS
 
+	Install presets from the community repo using
+```bash
+	tuiwall install	<preset>
+```
+
+	Install presets from the community repo using
+```bash
+	tuiwall install	<repo url>
+```
+	
 	Uninstall presets using
-		tuiwall uninstall <preset>
+```bash
+	tuiwall uninstall <preset>
+```
+
+### CREATING / CONTRIBUTING PRESETS
 
 	Edit / create presets using
-		tuiwall preset <new | edit | path> <preset>
+```bash
+	tuiwall preset <new | edit | path> <preset>
+```
 
-	Upload presets using
-		tuiwall upload <preset> <repo url>
+	Display additional preset info using
+```bash
+	tuiwall preset <info> <preset>
+```
 
-### WARNING : Vet every preset yourself via the editor prior to running. 
+	Record a gif for your preset using
+```bash
+	tuiwall record preset
+```
+
+	Associate an image with a preset using
+```bash
+	tuiwall preset image <preset> <image path> 
+```
+
+	Copy a preexisting preset using
+```bash
+	tuiwall preset copy <preexisting preset> <preset>
+```
+
+	Upload presets to the community repo using
+```bash
+		uiwall upload <preset> <repo url | NULL>
+```
+
+	Upload presets to your own repo using
+```bash
+	tuiwall upload <preset> <repo url>
+```
+
+### WARNING : Vet every preset yourself via the editor prior to running since each preset is a Python script. Recommmended presets can be downloaded from the community repo at : https://github.com/Mug-Costanza/tuiwall-presets
 
