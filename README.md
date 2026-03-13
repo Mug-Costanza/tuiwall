@@ -47,65 +47,81 @@ Improve the UX and customization options of terminal environments.
 ### USAGE
 
 **Enable / Disable header:**
-\`\`\`bash
+```bash
 tuiwall enable
+```
+```bash
 tuiwall disable
-\`\`\`
+```
 
 **Quick reset (disable & enable):**
-\`\`\`bash
+```bash
 tuiwall reset
-\`\`\`
+```
 
 **Change and List presets:**
-\`\`\`bash
+```bash
 tuiwall set <preset-name>
+```
+```bash
 tuiwall list
+```
+```bash
 tuiwall search <keyword>
-\`\`\`
+```
 
 **Check current status:**
-\`\`\`bash
+```bash
 tuiwall status
-\`\`\`
+```
 
 ---
 
 ### INSTALLING / MANAGING PRESETS
 
 **Install presets from the community repo or a specific URL:**
-\`\`\`bash
+```bash
 tuiwall install <preset-name>
+```
+```bash
 tuiwall install <repo-url>
-\`\`\`
+```
 
 **Uninstall a preset:**
-\`\`\`bash
+```bash
 tuiwall uninstall <preset-name>
-\`\`\`
+```
 
 ---
 
 ### CREATING / CONTRIBUTING PRESETS
 
 **Create, edit, or locate a preset:**
-\`\`\`bash
+```bash
 tuiwall preset new <name>
+```
+```bash
 tuiwall preset edit <name>
+```
+```bash
 tuiwall preset path <name>
-\`\`\`
+```
 
 **Display preset metadata and attach images:**
-\`\`\`bash
+```bash
 tuiwall preset info <preset-name>
+```
+```bash
 tuiwall preset image <preset-name> <image-path>
-\`\`\`
+```
 
 **Record a demo GIF and share:**
-\`\`\`bash
+```bash
 tuiwall record <preset-name>
+```
+```bash
 tuiwall upload <preset-name>
-\`\`\`
+```
 
 ---
 
