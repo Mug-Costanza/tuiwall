@@ -6,6 +6,13 @@
 
 ## EASY-INSTALL TERMINAL HEADER WALLPAPERS
 
+https://github.com/Mug-Costanza/tuiwall-presets/blob/main/images/matrix.gif
+https://github.com/Mug-Costanza/tuiwall-presets/blob/main/images/donut.gif
+https://github.com/Mug-Costanza/tuiwall-presets/blob/main/images/rain.gif
+
+### Presets
+https://github.com/Mug-Costanza/tuiwall-presets
+
 ### What is this?
 **tuiwall** creates persistent, animated, or informative headers at the top of your tmux windows. It allows you to customize the top ten lines of your terminal workspace with everything from CPU monitors and elaborate animated ASCII art to API-driven displays (live stock charts, weather reporting, etc.), all driven by simple Python scripts.
 
