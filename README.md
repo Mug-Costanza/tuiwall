@@ -6,9 +6,24 @@
 
 ## EASY-INSTALL TERMINAL HEADER WALLPAPERS
 
-![tuiwall matrix demo](https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/matrix.gif)
-![tuiwall donut demo](https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/donut.gif)
-![tuiwall rain demo](https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/rain.gif)
+<table style="width: 100%; border-collapse: collapse;">
+  <tr>
+    <td style="width: 50%; border: none;">
+      <img src="https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/matrix.gif" alt="Matrix" width="100%">
+    </td>
+    <td style="width: 50%; border: none;">
+      <img src="https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/donut.gif" alt="Donut" width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td style="width: 50%; border: none;">
+      <img src="https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/rain.gif" alt="Rain" width="100%">
+    </td>
+    <td style="width: 50%; border: none;">
+      <img src="https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/clock.gif" alt="Clock" width="100%">
+    </td>
+  </tr>
+</table>
 
 ### Presets
 https://github.com/Mug-Costanza/tuiwall-presets
