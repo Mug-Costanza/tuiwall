@@ -6,9 +6,9 @@
 
 ## EASY-INSTALL TERMINAL HEADER WALLPAPERS
 
-https://github.com/Mug-Costanza/tuiwall-presets/blob/main/images/matrix.gif
-https://github.com/Mug-Costanza/tuiwall-presets/blob/main/images/donut.gif
-https://github.com/Mug-Costanza/tuiwall-presets/blob/main/images/rain.gif
+![tuiwall matrix demo](https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/matrix.gif)
+![tuiwall donut demo](https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/donut.gif)
+![tuiwall rain demo](https://raw.githubusercontent.com/Mug-Costanza/tuiwall-presets/main/images/rain.gif)
 
 ### Presets
 https://github.com/Mug-Costanza/tuiwall-presets
