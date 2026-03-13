@@ -139,32 +139,32 @@ func UnsetHookGlobal(name string) error {
 }
 
 func ListGlobalOptionsWithPrefix(prefix string) (map[string]string, error) {
-    out, err := run("show-options", "-gq")
-    if err != nil {
-        return nil, err
-    }
-    res := map[string]string{}
-    for _, line := range strings.Split(out, "\n") {
-        line = strings.TrimSpace(line)
-        if line == "" {
-            continue
-        }
-        
-	if !strings.Contains(line, prefix) {
-            continue
-        }
-        
-	fields := strings.Fields(line)
-        for _, f := range fields {
-            if strings.HasPrefix(f, prefix) {
-                key := strings.Trim(f, `"`)
-                v, _ := GetGlobalOption(key)
-                res[key] = strings.TrimSpace(v)
-                break
-            }
-        }
-    }
-    return res, nil
+	out, err := run("show-options", "-gq")
+	if err != nil {
+		return nil, err
+	}
+	res := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if !strings.Contains(line, prefix) {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		for _, f := range fields {
+			if strings.HasPrefix(f, prefix) {
+				key := strings.Trim(f, `"`)
+				v, _ := GetGlobalOption(key)
+				res[key] = strings.TrimSpace(v)
+				break
+			}
+		}
+	}
+	return res, nil
 }
 
 func SetPaneOption(paneID, key, value string) error {
@@ -181,7 +181,7 @@ func GetPaneOption(paneID, key string) (string, error) {
 }
 
 type Pane struct {
-	ID    string
+	ID     string
 	Tagged bool
 }
 
@@ -288,5 +288,3 @@ func MaxPaneSize() (w int, h int, err error) {
 	}
 	return bestW, bestH, nil
 }
-
-

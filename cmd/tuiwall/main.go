@@ -6,84 +6,88 @@ import "strconv"
 import "archive/zip"
 
 import (
-	"io"
+	"embed"
 	"fmt"
+	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
+	"io"
+	"net"
 	"os"
-	"strings"
-	"time"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"net"
+	"strings"
 	"sync"
-	"embed"
-	"github.com/creack/pty"
+	"time"
 	"tuiwall/internal/tmux"
-        "golang.org/x/sys/unix"
 )
 
 var embeddedPresets embed.FS
 
 func checkPlatformSupport() {
-    if getTermiosReq == 0 || setTermiosReq == 0 {
-        // This means the build tags didn't fire or the OS isn't supported
-        fatal(fmt.Errorf("unsupported operating system for PTY operations"))
-    }
+	if getTermiosReq == 0 || setTermiosReq == 0 {
+		// This means the build tags didn't fire or the OS isn't supported
+		fatal(fmt.Errorf("unsupported operating system for PTY operations"))
+	}
 }
 
 func clearWindowStyles() {
 	// -g unsets the global/default style
 	_ = exec.Command("tmux", "set-window-option", "-g", "window-style", "default").Run()
 	_ = exec.Command("tmux", "set-window-option", "-g", "window-active-style", "default").Run()
-	
+
 	// Also target the current window specifically to be safe
 	_ = exec.Command("tmux", "set-window-option", "window-style", "default").Run()
 	_ = exec.Command("tmux", "set-window-option", "window-active-style", "default").Run()
 }
 
 func ensureExecutable(path string) error {
-    info, err := os.Stat(path)
-    if err != nil {
-        return err
-    }
-    
-    // Add the executable bit (0111) to the existing permissions
-    mode := info.Mode() | 0111
-    return os.Chmod(path, mode)
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+
+	// Add the executable bit (0111) to the existing permissions
+	mode := info.Mode() | 0111
+	return os.Chmod(path, mode)
 }
 
 // Add this to your main.go
 func setupSignalHandler() {
-    sigChan := make(chan os.Signal, 1)
-    // Listen for Ctrl+C (Interrupt) and Kill signals
-    signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	sigChan := make(chan os.Signal, 1)
+	// Listen for Ctrl+C (Interrupt) and Kill signals
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-    go func() {
-        <-sigChan
-        // This runs even if the program is interrupted
-        fmt.Println("\nCleaning up UI styles...")
-        _ = exec.Command("tmux", "set-window-option", "-g", "window-style", "default").Run()
-        _ = exec.Command("tmux", "set-window-option", "-g", "window-active-style", "default").Run()
-        os.Exit(0)
-    }()
+	go func() {
+		<-sigChan
+		// This runs even if the program is interrupted
+		fmt.Println("\nCleaning up UI styles...")
+		_ = exec.Command("tmux", "set-window-option", "-g", "window-style", "default").Run()
+		_ = exec.Command("tmux", "set-window-option", "-g", "window-active-style", "default").Run()
+		os.Exit(0)
+	}()
 }
 
 func installEmbeddedTemplate() error {
-    home, err := presetHomeDir()
-    if err != nil { return err }
-    
-    dstDir := filepath.Join(home, "template")
-    if _, err := os.Stat(dstDir); err == nil {
-        return fmt.Errorf("template already installed")
-    }
+	home, err := presetHomeDir()
+	if err != nil {
+		return err
+	}
 
-    _ = os.MkdirAll(dstDir, 0755)
-    
-    // Read from the embedded filesystem
-    content, err := embeddedPresets.ReadFile("internal/presets/template/template.py")
-    if err != nil { return err }
+	dstDir := filepath.Join(home, "template")
+	if _, err := os.Stat(dstDir); err == nil {
+		return fmt.Errorf("template already installed")
+	}
 
-    return os.WriteFile(filepath.Join(dstDir, "template.py"), content, 0644)
+	_ = os.MkdirAll(dstDir, 0755)
+
+	// Read from the embedded filesystem
+	content, err := embeddedPresets.ReadFile("internal/presets/template/template.py")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(filepath.Join(dstDir, "template.py"), content, 0644)
 }
 
 func getPythonCmd() string {
@@ -107,21 +111,21 @@ type PresetMetadata struct {
 }
 
 func runRecord(name string) {
-    if _, err := exec.LookPath("vhs"); err != nil {
-        fatal(fmt.Errorf("vhs not found. Please install it to use the record feature.\n" +
-            "Visit: https://github.com/charmbracelet/vhs"))
-    }
+	if _, err := exec.LookPath("vhs"); err != nil {
+		fatal(fmt.Errorf("vhs not found. Please install it to use the record feature.\n" +
+			"Visit: https://github.com/charmbracelet/vhs"))
+	}
 
-    scriptPath, err := presetScriptPathStrict(name)
-    if err != nil {
-        fatal(err)
-    }
-    
-    dir := filepath.Dir(scriptPath)
-    tapePath := filepath.Join(dir, "demo.tape")
-    
-    // We use a specific export for ZSH/Bash prompts to strip the username
-    content := fmt.Sprintf(`Output %s.gif
+	scriptPath, err := presetScriptPathStrict(name)
+	if err != nil {
+		fatal(err)
+	}
+
+	dir := filepath.Dir(scriptPath)
+	tapePath := filepath.Join(dir, "demo.tape")
+
+	// We use a specific export for ZSH/Bash prompts to strip the username
+	content := fmt.Sprintf(`Output %s.gif
 Set FontSize 20
 Set Width 1200
 Set Height 600
@@ -154,44 +158,44 @@ Type "tmux kill-session" Enter
 Show
 `, name, name)
 
-    if err := os.WriteFile(tapePath, []byte(content), 0644); err != nil {
-        fatal(fmt.Errorf("failed to write tape file: %w", err))
-    }
+	if err := os.WriteFile(tapePath, []byte(content), 0644); err != nil {
+		fatal(fmt.Errorf("failed to write tape file: %w", err))
+	}
 
-    fmt.Printf("Running vhs to generate %s.gif...\n", name)
-    cmd := exec.Command("vhs", tapePath)
-    cmd.Dir = dir
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
-    
-    if err := cmd.Run(); err != nil {
-        fatal(fmt.Errorf("vhs failed: %w", err))
-    }
+	fmt.Printf("Running vhs to generate %s.gif...\n", name)
+	cmd := exec.Command("vhs", tapePath)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-    fmt.Printf("Successfully generated %s.gif in %s\n", name, dir)
+	if err := cmd.Run(); err != nil {
+		fatal(fmt.Errorf("vhs failed: %w", err))
+	}
+
+	fmt.Printf("Successfully generated %s.gif in %s\n", name, dir)
 }
 
 func printWrapped(text string, indent int, maxWidth int) {
-    if maxWidth <= indent {
-        maxWidth = 80 // Fallback
-    }
-    
-    words := strings.Fields(text)
-    if len(words) == 0 {
-        return
-    }
+	if maxWidth <= indent {
+		maxWidth = 80 // Fallback
+	}
 
-    currentLineLength := indent
-    for _, word := range words {
-        // If the word + a space would exceed the width, start a new line
-        if currentLineLength+len(word)+1 > maxWidth {
-            fmt.Print("\n" + strings.Repeat(" ", indent))
-            currentLineLength = indent
-        }
-        
-        fmt.Print(word + " ")
-        currentLineLength += len(word) + 1
-    }
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return
+	}
+
+	currentLineLength := indent
+	for _, word := range words {
+		// If the word + a space would exceed the width, start a new line
+		if currentLineLength+len(word)+1 > maxWidth {
+			fmt.Print("\n" + strings.Repeat(" ", indent))
+			currentLineLength = indent
+		}
+
+		fmt.Print(word + " ")
+		currentLineLength += len(word) + 1
+	}
 }
 
 func confirmAction(prompt string) bool {
@@ -257,7 +261,7 @@ func parseMetadata(path string) PresetMetadata {
 		if !strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		clean := strings.TrimPrefix(line, "#")
 		parts := strings.SplitN(clean, ":", 2)
 		if len(parts) < 2 {
@@ -321,12 +325,12 @@ func main() {
 	setupSignalHandler()
 
 	defer func() {
-        if r := recover(); r != nil {
-            fmt.Fprintf(os.Stderr, "tuiwall panic: %v\n", r)
-            _ = disable() 
-            os.Exit(1)
-        }
-    	}()
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "tuiwall panic: %v\n", r)
+			_ = disable()
+			os.Exit(1)
+		}
+	}()
 
 	if len(os.Args) < 2 {
 		usage()
@@ -335,36 +339,36 @@ func main() {
 
 	switch os.Args[1] {
 	case "enable":
-	mustInTmux()
-    	exe := tmux.MustExecutablePath()
-    	if err := enable(exe); err != nil {
-        	fatal(err)
-    	}
-    	fmt.Println("tuiwall enabled")		
+		mustInTmux()
+		exe := tmux.MustExecutablePath()
+		if err := enable(exe); err != nil {
+			fatal(err)
+		}
+		fmt.Println("tuiwall enabled")
 	case "disable":
 		mustInTmux()
-		if err:= disable(); err != nil {
+		if err := disable(); err != nil {
 			fatal(err)
 		}
 		fmt.Println("tuiwall disabled")
 
-case "set":
-	mustInTmux()
+	case "set":
+		mustInTmux()
 
-	if len(os.Args) < 3 {
-		fatal(fmt.Errorf("usage: tuiwall set <preset-name>"))
-	}
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: tuiwall set <preset-name>"))
+		}
 
-	p := strings.TrimSpace(os.Args[2])
-	if p == "" {
-		fatal(fmt.Errorf("usage: tuiwall set <preset-name>"))
-	}
+		p := strings.TrimSpace(os.Args[2])
+		if p == "" {
+			fatal(fmt.Errorf("usage: tuiwall set <preset-name>"))
+		}
 
-	if err := tmux.SetGlobalOption("@tuiwall_preset", p); err != nil {
-		fatal(err)
-	}
+		if err := tmux.SetGlobalOption("@tuiwall_preset", p); err != nil {
+			fatal(err)
+		}
 
-	fmt.Println("tuiwall preset set to:", p)
+		fmt.Println("tuiwall preset set to:", p)
 
 	case "status":
 		mustInTmux()
@@ -376,9 +380,9 @@ case "set":
 
 		heightStr, err := tmux.GetGlobalOption("@tuiwall_height")
 
-    if strings.TrimSpace(heightStr) == "" || err != nil {  
-        heightStr = "10" // Default fallback
-    }
+		if strings.TrimSpace(heightStr) == "" || err != nil {
+			heightStr = "10" // Default fallback
+		}
 
 		fmt.Printf("enabled=%s preset=%s\n", strings.TrimSpace(enabled), strings.TrimSpace(preset))
 
@@ -392,92 +396,92 @@ case "set":
 		runMaster()
 	case "_mirror":
 		runMirror()
-case "list":
-    presets, err := listPresets()
-    if err != nil {
-        fatal(err)
-    }
-    if len(presets) == 0 {
-        fmt.Println("no presets found")
-        return
-    }
+	case "list":
+		presets, err := listPresets()
+		if err != nil {
+			fatal(err)
+		}
+		if len(presets) == 0 {
+			fmt.Println("no presets found")
+			return
+		}
 
-    termWidth := 80 // Default fallback
-    if w, _, err := tmux.CurrentClientSize(); err == nil && w > 0 {
-        termWidth = w
-    }
+		termWidth := 80 // Default fallback
+		if w, _, err := tmux.CurrentClientSize(); err == nil && w > 0 {
+			termWidth = w
+		}
 
-    // Name (15), Category (12), Spacing/Pipes (5)
-    nameWidth := 15
-    catWidth := 12
-    descLimit := termWidth - nameWidth - catWidth - 5
-    if descLimit < 10 {
-        descLimit = 10 // Sanity floor
-    }
+		// Name (15), Category (12), Spacing/Pipes (5)
+		nameWidth := 15
+		catWidth := 12
+		descLimit := termWidth - nameWidth - catWidth - 5
+		if descLimit < 10 {
+			descLimit = 10 // Sanity floor
+		}
 
-    var sb strings.Builder
-    header := fmt.Sprintf("%-15s %-12s %s\n", "PRESET", "CATEGORY", "DESCRIPTION")
-    sb.WriteString(header)
-    sb.WriteString(strings.Repeat("-", len(header)) + "\n")
+		var sb strings.Builder
+		header := fmt.Sprintf("%-15s %-12s %s\n", "PRESET", "CATEGORY", "DESCRIPTION")
+		sb.WriteString(header)
+		sb.WriteString(strings.Repeat("-", len(header)) + "\n")
 
-    for _, p := range presets {
-        cat := p.Category
-        if cat == "" {
-            cat = "Misc"
-        }
-        
-        // Truncate name if it somehow exceeds 15 chars
-        displayName := p.Name
-        if len(displayName) > nameWidth {
-            displayName = displayName[:nameWidth-3] + "..."
-        }
+		for _, p := range presets {
+			cat := p.Category
+			if cat == "" {
+				cat = "Misc"
+			}
 
-        // Smart truncate description based on terminal width
-        desc := p.Description
-        if len(desc) > descLimit {
-            desc = desc[:descLimit-3] + "..."
-        }
-        
-        sb.WriteString(fmt.Sprintf("%-15s %-12s %s\n", displayName, cat, desc))
-    }
+			// Truncate name if it somehow exceeds 15 chars
+			displayName := p.Name
+			if len(displayName) > nameWidth {
+				displayName = displayName[:nameWidth-3] + "..."
+			}
 
-    // -F: quit if content fits on one screen
-    // -R: allow ANSI colors (if you add them later)
-    // -X: don't clear screen on exit
-    cmd := exec.Command("less", "-F", "-R", "-X")
-    cmd.Stdin = strings.NewReader(sb.String())
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
-    
-    if err := cmd.Run(); err != nil {
-        // Fallback: just print if less fails
-        fmt.Print(sb.String())
-    }
+			// Smart truncate description based on terminal width
+			desc := p.Description
+			if len(desc) > descLimit {
+				desc = desc[:descLimit-3] + "..."
+			}
 
-case "search":
-    if len(os.Args) < 3 {
-        fatal(fmt.Errorf("usage: tuiwall search <keyword>"))
-    }
-    query := strings.ToLower(os.Args[2])
-    presets, _ := listPresets()
+			sb.WriteString(fmt.Sprintf("%-15s %-12s %s\n", displayName, cat, desc))
+		}
 
-    fmt.Printf("Results for '%s':\n", query)
-    for _, p := range presets {
-        if strings.Contains(strings.ToLower(p.Name), query) || 
-           strings.Contains(strings.ToLower(p.Category), query) {
-            fmt.Printf("%-15s [%s] %s\n", p.Name, p.Category, p.Description)
-        }
-    }
-case "record":
-    if len(os.Args) < 3 {
-        fatal(fmt.Errorf("usage: tuiwall record <preset-name>"))
-    }
-    runRecord(os.Args[2])
+		// -F: quit if content fits on one screen
+		// -R: allow ANSI colors (if you add them later)
+		// -X: don't clear screen on exit
+		cmd := exec.Command("less", "-F", "-R", "-X")
+		cmd.Stdin = strings.NewReader(sb.String())
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Run(); err != nil {
+			// Fallback: just print if less fails
+			fmt.Print(sb.String())
+		}
+
+	case "search":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: tuiwall search <keyword>"))
+		}
+		query := strings.ToLower(os.Args[2])
+		presets, _ := listPresets()
+
+		fmt.Printf("Results for '%s':\n", query)
+		for _, p := range presets {
+			if strings.Contains(strings.ToLower(p.Name), query) ||
+				strings.Contains(strings.ToLower(p.Category), query) {
+				fmt.Printf("%-15s [%s] %s\n", p.Name, p.Category, p.Description)
+			}
+		}
+	case "record":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: tuiwall record <preset-name>"))
+		}
+		runRecord(os.Args[2])
 	case "help":
 		usage()
 	case "version":
-   	 fmt.Println("tuiwall v0.1.0")
-    	return
+		fmt.Println("tuiwall v0.1.0")
+		return
 
 	case "reset":
 		// disable
@@ -486,52 +490,52 @@ case "record":
 		if err := disable(); err != nil {
 			fatal(err)
 		}
-		
+
 		// reenable
-		if err:= enable(exe); err != nil {
+		if err := enable(exe); err != nil {
 			fatal(err)
 		}
 		fmt.Println("tuiwall reset")
 
 	/*
-	case "height":
-	if len(os.Args) < 3 {
-		fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
-	}
+		case "height":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
+		}
 
-	newHeight, e := strconv.Atoi(strings.TrimSpace(os.Args[2]))
+		newHeight, e := strconv.Atoi(strings.TrimSpace(os.Args[2]))
 
-	if e != nil {
-		fatal(e)
-	}
+		if e != nil {
+			fatal(e)
+		}
 
-	if newHeight < 2 || newHeight > 10 {
-		fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
-	}
+		if newHeight < 2 || newHeight > 10 {
+			fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
+		}
 
-	if err := tmux.SetGlobalOption("@tuiwall_height", strings.TrimSpace(os.Args[2])); err != nil  {
-		fatal(err)
-	}
-
-	fmt.Println("set height to", newHeight)
-	HEADER_HEIGHT = newHeight
-
-enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled") 
-	if strings.TrimSpace(enabled) == "1" {
-		// disable
-		mustInTmux()
-		exe := tmux.MustExecutablePath()
-		if err := disable(); err != nil {
+		if err := tmux.SetGlobalOption("@tuiwall_height", strings.TrimSpace(os.Args[2])); err != nil  {
 			fatal(err)
 		}
-		
-		// reenable
-		if err:= enable(exe); err != nil {
-			fatal(err)
+
+		fmt.Println("set height to", newHeight)
+		HEADER_HEIGHT = newHeight
+
+	enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
+		if strings.TrimSpace(enabled) == "1" {
+			// disable
+			mustInTmux()
+			exe := tmux.MustExecutablePath()
+			if err := disable(); err != nil {
+				fatal(err)
+			}
+
+			// reenable
+			if err:= enable(exe); err != nil {
+				fatal(err)
+			}
 		}
-	}
 	*/
-		
+
 	case "_reset_on_resize":
 		// disable
 		mustInTmux()
@@ -539,111 +543,111 @@ enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
 		if err := disable(); err != nil {
 			fatal(err)
 		}
-		
+
 		// reenable
-		if err:= enable(exe); err != nil {
+		if err := enable(exe); err != nil {
 			fatal(err)
 		}
-		
-case "preset":
-    if len(os.Args) < 3 {
-        fatal(fmt.Errorf("usage: tuiwall preset <new|edit|path> ..."))
-    }
 
-    sub := strings.TrimSpace(os.Args[2])
-    switch sub {
-    case "new":
-        if len(os.Args) < 4 {
-            fatal(fmt.Errorf("usage: tuiwall preset new <name>"))
-        }
-        name := strings.TrimSpace(os.Args[3])
-        if err := presetNewFromTemplate(name); err != nil {
-            fatal(err)
-        }
-        fmt.Println("created preset:", name)
+	case "preset":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: tuiwall preset <new|edit|path> ..."))
+		}
 
-    case "edit":
-        if len(os.Args) < 4 {
-            fatal(fmt.Errorf("usage: tuiwall preset edit <name>"))
-        }
-        name := strings.TrimSpace(os.Args[3])
-        p, err := presetScriptPathStrict(name)
-        if err != nil {
-            fatal(err)
-        }
-        if err := openInEditor(p); err != nil {
-            fatal(err)
-        }
+		sub := strings.TrimSpace(os.Args[2])
+		switch sub {
+		case "new":
+			if len(os.Args) < 4 {
+				fatal(fmt.Errorf("usage: tuiwall preset new <name>"))
+			}
+			name := strings.TrimSpace(os.Args[3])
+			if err := presetNewFromTemplate(name); err != nil {
+				fatal(err)
+			}
+			fmt.Println("created preset:", name)
 
-    case "path":
-        if len(os.Args) < 4 {
-            fatal(fmt.Errorf("usage: tuiwall preset path <name>"))
-        }
-        name := strings.TrimSpace(os.Args[3])
-        p, err := presetScriptPathStrict(name)
-        if err != nil {
-            fatal(err)
-        }
-        fmt.Println(p)
+		case "edit":
+			if len(os.Args) < 4 {
+				fatal(fmt.Errorf("usage: tuiwall preset edit <name>"))
+			}
+			name := strings.TrimSpace(os.Args[3])
+			p, err := presetScriptPathStrict(name)
+			if err != nil {
+				fatal(err)
+			}
+			if err := openInEditor(p); err != nil {
+				fatal(err)
+			}
 
-	case "info":
-    if len(os.Args) < 4 {
-        fatal(fmt.Errorf("usage: tuiwall preset info <preset-name>"))
-    }
-    name := os.Args[3]
-    path, err := presetScriptPathStrict(name)
-    if err != nil {
-        fatal(err)
-    }
-    meta := parseMetadata(path)
+		case "path":
+			if len(os.Args) < 4 {
+				fatal(fmt.Errorf("usage: tuiwall preset path <name>"))
+			}
+			name := strings.TrimSpace(os.Args[3])
+			p, err := presetScriptPathStrict(name)
+			if err != nil {
+				fatal(err)
+			}
+			fmt.Println(p)
 
-    // Using a consistent width for labels (e.g., 14 characters)
-    fmt.Printf("%-14s %s\n", "Name:", meta.Name)
-    fmt.Printf("%-14s %s\n", "Author:", meta.Author)
-    fmt.Printf("%-14s %s\n", "Category:", meta.Category)
+		case "info":
+			if len(os.Args) < 4 {
+				fatal(fmt.Errorf("usage: tuiwall preset info <preset-name>"))
+			}
+			name := os.Args[3]
+			path, err := presetScriptPathStrict(name)
+			if err != nil {
+				fatal(err)
+			}
+			meta := parseMetadata(path)
 
-    // Handle the description with wrapping
-    fmt.Printf("%-14s ", "Description:")
-    printWrapped(meta.Description, 15, 80) // Indent subsequent lines by 15
-    fmt.Println()
+			// Using a consistent width for labels (e.g., 14 characters)
+			fmt.Printf("%-14s %s\n", "Name:", meta.Name)
+			fmt.Printf("%-14s %s\n", "Author:", meta.Author)
+			fmt.Printf("%-14s %s\n", "Category:", meta.Category)
 
-	case "image":
-        if len(os.Args) < 5 {
-            fatal(fmt.Errorf("usage: tuiwall preset image <preset-name> <image-path>"))
-        }
-        name := strings.TrimSpace(os.Args[3])
-        img  := strings.TrimSpace(os.Args[4])
-        if err := presetAttachImage(name, img); err != nil {
-            fatal(err)
-        }
+			// Handle the description with wrapping
+			fmt.Printf("%-14s ", "Description:")
+			printWrapped(meta.Description, 15, 80) // Indent subsequent lines by 15
+			fmt.Println()
 
-    case "copy":
-	if len(os.Args) < 5 {
-		fatal(fmt.Errorf("usage: tuiwall preset copy <existing preses> <name>"))
-	}
+		case "image":
+			if len(os.Args) < 5 {
+				fatal(fmt.Errorf("usage: tuiwall preset image <preset-name> <image-path>"))
+			}
+			name := strings.TrimSpace(os.Args[3])
+			img := strings.TrimSpace(os.Args[4])
+			if err := presetAttachImage(name, img); err != nil {
+				fatal(err)
+			}
 
-	copyName := strings.TrimSpace(os.Args[3])
-	name := strings.TrimSpace(os.Args[4])
+		case "copy":
+			if len(os.Args) < 5 {
+				fatal(fmt.Errorf("usage: tuiwall preset copy <existing preses> <name>"))
+			}
 
-	if _,  err:= presetScriptPathStrict(copyName); err != nil{
-		fatal(err)
-	} 
+			copyName := strings.TrimSpace(os.Args[3])
+			name := strings.TrimSpace(os.Args[4])
 
-        if err := presetNewFromCopy(copyName, name); err != nil {
-		fatal(err)
-	}
+			if _, err := presetScriptPathStrict(copyName); err != nil {
+				fatal(err)
+			}
 
-	/*
-	if err := o {
-		fatal(err)
-	}
-	*/
+			if err := presetNewFromCopy(copyName, name); err != nil {
+				fatal(err)
+			}
 
-    default: 
-        fatal(fmt.Errorf("usage: tuiwall preset <new|edit|path> ..."))
-    }
+			/*
+				if err := o {
+					fatal(err)
+				}
+			*/
 
-case "install":
+		default:
+			fatal(fmt.Errorf("usage: tuiwall preset <new|edit|path> ..."))
+		}
+
+	case "install":
 		if len(os.Args) < 3 {
 			fatal(fmt.Errorf("usage: tuiwall install <path|git-url|name>"))
 		}
@@ -652,7 +656,7 @@ case "install":
 
 		fmt.Println("SECURITY WARNING: Presets contain Python scripts that run on your system.")
 		fmt.Printf("   Only install presets from authors you trust.\n\n")
-		
+
 		if !confirmAction(fmt.Sprintf("Do you want to install '%s'?", src)) {
 			fmt.Println("Installation aborted.")
 			return
@@ -663,17 +667,17 @@ case "install":
 		}
 	case "uninstall":
 		if len(os.Args) < 3 {
-        fatal(fmt.Errorf("usage: tuiwall uninstall <name>"))
-    }
-    name := strings.TrimSpace(os.Args[2])
-    if name == "template" { 
-		fmt.Println("You cannot uninstall the template preset")
-		return 
-	}
-    if err := presetUninstall(name); err != nil {
-        fatal(err)
-    }
-    fmt.Println("uninstalled preset:", name)
+			fatal(fmt.Errorf("usage: tuiwall uninstall <name>"))
+		}
+		name := strings.TrimSpace(os.Args[2])
+		if name == "template" {
+			fmt.Println("You cannot uninstall the template preset")
+			return
+		}
+		if err := presetUninstall(name); err != nil {
+			fatal(err)
+		}
+		fmt.Println("uninstalled preset:", name)
 
 	case "upload":
 		if len(os.Args) < 3 {
@@ -683,7 +687,7 @@ case "install":
 
 		fmt.Println("PRIVACY WARNING: You are about to share your local preset code.")
 		fmt.Println("   Ensure your script doesn't contain hardcoded API keys, tokens, or personal paths.")
-		
+
 		if !confirmAction(fmt.Sprintf("Are you sure you want to upload/zip '%s'?", name)) {
 			fmt.Println("Upload aborted.")
 			return
@@ -691,7 +695,9 @@ case "install":
 
 		if len(os.Args) >= 4 && os.Args[3] == "--zip" {
 			out, err := presetZip(name)
-			if err != nil { fatal(err) }
+			if err != nil {
+				fatal(err)
+			}
 			fmt.Println(out)
 			return
 		}
@@ -709,60 +715,58 @@ case "install":
 			fatal(err)
 		}
 
-case "_update-master-size":
-        _ = exec.Command("pkill", "-SIGWINCH", "-f", "tuiwall _master").Run()
-return
-case "_ensure-header":
-    mustInTmux()
+	case "_update-master-size":
+		_ = exec.Command("pkill", "-SIGWINCH", "-f", "tuiwall _master").Run()
+		return
+	case "_ensure-header":
+		mustInTmux()
 
-	if os.Getenv("TUIWALL_HEADER") == "1" {	
-		// fmt.Println("Header already exists - TUIWALL_HEADER")		
-    		return
-	}
+		if os.Getenv("TUIWALL_HEADER") == "1" {
+			// fmt.Println("Header already exists - TUIWALL_HEADER")
+			return
+		}
 
+		if p, err := tmux.CurrentPaneID(); err == nil {
+			if tag, _ := tmux.GetPaneOption(strings.TrimSpace(p), "@tuiwall_header"); strings.TrimSpace(tag) == "1" {
+				// fmt.Println("Header already exists - @tuiwall_header")
+				return
+			}
+		}
 
-	if p, err := tmux.CurrentPaneID(); err == nil {
-  	  if tag, _ := tmux.GetPaneOption(strings.TrimSpace(p), "@tuiwall_header"); strings.TrimSpace(tag) == "1" {
-		// fmt.Println("Header already exists - @tuiwall_header")
-   	     return
-   	 }
-	}
+		// only act if enabled
+		enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
+		if strings.TrimSpace(enabled) != "1" {
+			return
+		}
 
+		exe := tmux.MustExecutablePath()
 
-    // only act if enabled
-    enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
-    if strings.TrimSpace(enabled) != "1" {
-        return
-    }
+		win, err := tmux.CurrentWindowID()
+		if err != nil || strings.TrimSpace(win) == "" {
+			return
+		}
+		win = strings.TrimSpace(win)
 
-    exe := tmux.MustExecutablePath()
+		// If a header creation is in-flight for this window, do nothing.
+		lk := lockKeyForWindow(win)
+		if v, _ := tmux.GetGlobalOption(lk); strings.TrimSpace(v) != "" {
+			// optional: clear stale locks (> 3s)
+			if ms, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				if time.Now().UnixMilli()-ms < 3000 {
+					return
+				}
+			}
+			_ = tmux.UnsetGlobalOption(lk)
+		}
 
-    win, err := tmux.CurrentWindowID()
-    if err != nil || strings.TrimSpace(win) == "" {
-        return
-    }
-    win = strings.TrimSpace(win)
+		// If the ACTIVE pane is already a tuiwall header, do nothing.
+		if p, err := tmux.CurrentPaneID(); err == nil && strings.TrimSpace(p) != "" {
+			if tag, _ := tmux.GetPaneOption(strings.TrimSpace(p), "@tuiwall_header"); strings.TrimSpace(tag) == "1" {
+				return
+			}
+		}
 
-    // If a header creation is in-flight for this window, do nothing.
-    lk := lockKeyForWindow(win)
-    if v, _ := tmux.GetGlobalOption(lk); strings.TrimSpace(v) != "" {
-        // optional: clear stale locks (> 3s)
-        if ms, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-            if time.Now().UnixMilli()-ms < 3000 {
-                return
-            }
-        }
-        _ = tmux.UnsetGlobalOption(lk)
-    }
-
-    // If the ACTIVE pane is already a tuiwall header, do nothing.
-    if p, err := tmux.CurrentPaneID(); err == nil && strings.TrimSpace(p) != "" {
-        if tag, _ := tmux.GetPaneOption(strings.TrimSpace(p), "@tuiwall_header"); strings.TrimSpace(tag) == "1" {
-            return
-        }
-    }
-
-    ensureHeaderForWindow(exe, win)
+		ensureHeaderForWindow(exe, win)
 
 	default:
 		usage()
@@ -791,11 +795,11 @@ Usage:
 }
 
 func activePaneID() string {
-    out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
-    if err != nil {
-        return ""
-    }
-    return strings.TrimSpace(string(out))
+	out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func InTmux() bool {
@@ -875,121 +879,125 @@ func fatal(err error) {
 }
 
 func enable(exePath string) error {
-    if _, err := exec.LookPath("tmux"); err != nil {
-        return fmt.Errorf("tmux not found in PATH: please install tmux to use tuiwall")
-    }
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return fmt.Errorf("tmux not found in PATH: please install tmux to use tuiwall")
+	}
 
-    if _, err := exec.LookPath("gh"); err != nil {
-        fmt.Println("Warning: GitHub CLI (gh) not found. Community features will be disabled.")
-    }
+	if _, err := exec.LookPath("gh"); err != nil {
+		fmt.Println("Warning: GitHub CLI (gh) not found. Community features will be disabled.")
+	}
 
-    // Check for Python (trying python3 then python)
-    pyCmd := getPythonCmd()
-    if pyCmd == "" {
-        return fmt.Errorf("python not found: please install Python 3 to run tuiwall presets")
-    }
+	// Check for Python (trying python3 then python)
+	pyCmd := getPythonCmd()
+	if pyCmd == "" {
+		return fmt.Errorf("python not found: please install Python 3 to run tuiwall presets")
+	}
 
-    enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
-    hasSession := exec.Command("tmux", "has-session", "-t", "tuiwall-master").Run() == nil
+	enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
+	hasSession := exec.Command("tmux", "has-session", "-t", "tuiwall-master").Run() == nil
 
-    if strings.TrimSpace(enabled) == "1" && hasSession {
-        ensureHeadersAllWindows(exePath)
-        return nil
-    }
+	if strings.TrimSpace(enabled) == "1" && hasSession {
+		ensureHeadersAllWindows(exePath)
+		return nil
+	}
 
-    _ = tmux.SetGlobalOption("@tuiwall_enabled", "1")
-    _ = tmux.SetGlobalOption("@tuiwall_python", pyCmd)
+	_ = tmux.SetGlobalOption("@tuiwall_enabled", "1")
+	_ = tmux.SetGlobalOption("@tuiwall_python", pyCmd)
 
-    mw, _, err := tmux.MaxPaneSize()
-    if err != nil || mw <= 0 {
-        // Fallback: current client size
-        cw, _, _ := tmux.CurrentClientSize()
-        if cw > 0 { mw = cw } else { mw = 80 }
-    }
+	mw, _, err := tmux.MaxPaneSize()
+	if err != nil || mw <= 0 {
+		// Fallback: current client size
+		cw, _, _ := tmux.CurrentClientSize()
+		if cw > 0 {
+			mw = cw
+		} else {
+			mw = 80
+		}
+	}
 
-    _ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
+	_ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
 
-    // Force TERM=xterm-256color so the Python presets know they have color support
-    masterCmd := fmt.Sprintf("TERM=xterm-256color %s _master", shellEscape(exePath))
+	// Force TERM=xterm-256color so the Python presets know they have color support
+	masterCmd := fmt.Sprintf("TERM=xterm-256color %s _master", shellEscape(exePath))
 
-    err = exec.Command("tmux", "new-session", "-d",
-        "-x", fmt.Sprint(mw),
-        "-y", fmt.Sprint(HEADER_HEIGHT),
-        "-s", "tuiwall-master",
-        masterCmd,
-    ).Run()
+	err = exec.Command("tmux", "new-session", "-d",
+		"-x", fmt.Sprint(mw),
+		"-y", fmt.Sprint(HEADER_HEIGHT),
+		"-s", "tuiwall-master",
+		masterCmd,
+	).Run()
 
-    if err != nil {
-        return fmt.Errorf("failed to start tuiwall-master session: %w", err)
-    }
+	if err != nil {
+		return fmt.Errorf("failed to start tuiwall-master session: %w", err)
+	}
 
-    // Wait for the master socket to be ready before continuing
-    _ = exec.Command("tmux", "wait-for", "tuiwall_ready").Run()
-    
-    installHooks(exePath)
-    ensureHeadersAllWindows(exePath)
-    
-    return nil
+	// Wait for the master socket to be ready before continuing
+	_ = exec.Command("tmux", "wait-for", "tuiwall_ready").Run()
+
+	installHooks(exePath)
+	ensureHeadersAllWindows(exePath)
+
+	return nil
 }
 
 func disable() error {
-    removeHooks()
-   
-    // Explicitly kill the master session to trigger the new cleanup logic
-    _ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
- 
-    _ = exec.Command("tmux", "set-window-option", "window-style", "default").Run()
-    _ = exec.Command("tmux", "set-window-option", "window-active-style", "default").Run()
+	removeHooks()
 
-    wins, err := tmux.ListSessionWindowIDs()
-    if err == nil {
-        for _, w := range wins {
-            // Find and kill the header pane
-            if paneID, ok := tmux.FindHeaderPaneInWindow(w); ok {
-                // Before killing, try to clear the pane's styling
-                _ = exec.Command("tmux", "set-pane-option", "-t", paneID, "select-pane-color", "default").Run()
-                _ = tmux.KillPaneAsync(paneID)
-            }
-            
-            // Cleanup internal tmux variables
-            key := headerKeyForWindow(w)
-            _ = tmux.UnsetGlobalOption(key)
-            _ = tmux.UnsetGlobalOption(lockKeyForWindow(w))
-        }
-    }
+	// Explicitly kill the master session to trigger the new cleanup logic
+	_ = exec.Command("tmux", "kill-session", "-t", "tuiwall-master").Run()
 
-    _ = tmux.UnsetGlobalOption("@tuiwall_enabled")
-    _ = tmux.UnsetGlobalOption("@tuiwall_mode")
-    
-    _ = exec.Command("tmux", "refresh-client", "-S").Run()
-    
-    return nil
+	_ = exec.Command("tmux", "set-window-option", "window-style", "default").Run()
+	_ = exec.Command("tmux", "set-window-option", "window-active-style", "default").Run()
+
+	wins, err := tmux.ListSessionWindowIDs()
+	if err == nil {
+		for _, w := range wins {
+			// Find and kill the header pane
+			if paneID, ok := tmux.FindHeaderPaneInWindow(w); ok {
+				// Before killing, try to clear the pane's styling
+				_ = exec.Command("tmux", "set-pane-option", "-t", paneID, "select-pane-color", "default").Run()
+				_ = tmux.KillPaneAsync(paneID)
+			}
+
+			// Cleanup internal tmux variables
+			key := headerKeyForWindow(w)
+			_ = tmux.UnsetGlobalOption(key)
+			_ = tmux.UnsetGlobalOption(lockKeyForWindow(w))
+		}
+	}
+
+	_ = tmux.UnsetGlobalOption("@tuiwall_enabled")
+	_ = tmux.UnsetGlobalOption("@tuiwall_mode")
+
+	_ = exec.Command("tmux", "refresh-client", "-S").Run()
+
+	return nil
 }
 
 func getFIFOPath() string {
-    return filepath.Join(os.TempDir(), "tuiwall.fifo")
+	return filepath.Join(os.TempDir(), "tuiwall.fifo")
 }
 
 func ensureFIFOExists() error {
-    path := getFIFOPath()
-    if _, err := os.Stat(path); os.IsNotExist(err) {
-        // Create a named pipe (Unix only)
-        return exec.Command("mkfifo", path).Run()
-    }
-    return nil
+	path := getFIFOPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		// Create a named pipe (Unix only)
+		return exec.Command("mkfifo", path).Run()
+	}
+	return nil
 }
 
-func resolvePreset () string {
-		preset := "template"
-		if os.Getenv("TMUX") != "" {
-			if p, err := tmux.GetGlobalOption("@tuiwall_preset"); err == nil {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					preset = p
-				}
+func resolvePreset() string {
+	preset := "template"
+	if os.Getenv("TMUX") != "" {
+		if p, err := tmux.GetGlobalOption("@tuiwall_preset"); err == nil {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				preset = p
 			}
 		}
-		return preset
+	}
+	return preset
 }
 
 func runHeaderWithWriter(out io.Writer) {
@@ -1008,24 +1016,24 @@ func runHeaderWithWriter(out io.Writer) {
 	}
 
 	/*
-	resolvePreset := func() string {
-		preset := "template"
-		if os.Getenv("TMUX") != "" {
-			if p, err := tmux.GetGlobalOption("@tuiwall_preset"); err == nil {
-				p = strings.TrimSpace(p)
-				if p != "" {
-					preset = p
+		resolvePreset := func() string {
+			preset := "template"
+			if os.Getenv("TMUX") != "" {
+				if p, err := tmux.GetGlobalOption("@tuiwall_preset"); err == nil {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						preset = p
+					}
 				}
 			}
-		}
-		return preset
-	}*/
+			return preset
+		}*/
 
 	var (
-		curPreset     string
-		pendingPreset string
-		pendingSince  time.Time
-		cmd           *exec.Cmd
+		curPreset      string
+		pendingPreset  string
+		pendingSince   time.Time
+		cmd            *exec.Cmd
 		nextStartAfter time.Time
 	)
 
@@ -1050,7 +1058,7 @@ func runHeaderWithWriter(out io.Writer) {
 
 		c := exec.Command(getPythonCmd(), script)
 		c.Stdin = os.Stdin
-		c.Stdout = out 
+		c.Stdout = out
 		c.Stderr = os.Stderr
 
 		if err := c.Start(); err != nil {
@@ -1142,7 +1150,7 @@ func startPresetWithPTY(preset string, clients *[]net.Conn, mu *sync.Mutex) {
 	if err != nil || mw <= 0 {
 		cw, _, _ := tmux.CurrentClientSize()
 		if cw <= 0 {
-			mw = 80 
+			mw = 80
 		} else {
 			mw = cw
 		}
@@ -1181,11 +1189,11 @@ func startPresetWithPTY(preset string, clients *[]net.Conn, mu *sync.Mutex) {
 }
 
 func getSocketPath() string {
-    base := os.Getenv("XDG_RUNTIME_DIR")
-    if base == "" {
-        base = os.TempDir()
-    }
-    return filepath.Join(base, fmt.Sprintf("tuiwall-%d.sock", os.Getuid()))
+	base := os.Getenv("XDG_RUNTIME_DIR")
+	if base == "" {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, fmt.Sprintf("tuiwall-%d.sock", os.Getuid()))
 }
 
 func runMaster() {
@@ -1196,29 +1204,29 @@ func runMaster() {
 	if err != nil {
 		fatal(err)
 	}
-    
-    // Create a channel to listen for termination signals (Ctrl+C, tmux kill, etc.)
-    sigCleanup := make(chan os.Signal, 1)
-    signal.Notify(sigCleanup, os.Interrupt, syscall.SIGTERM)
 
-    go func() {
-        <-sigCleanup
-        fmt.Println("\nShutting down tuiwall-master...")
-        
-        cmdMu.Lock()
-        if currentCmd != nil && currentCmd.Process != nil {
-            _ = currentCmd.Process.Kill()
-        }
-        cmdMu.Unlock()
+	// Create a channel to listen for termination signals (Ctrl+C, tmux kill, etc.)
+	sigCleanup := make(chan os.Signal, 1)
+	signal.Notify(sigCleanup, os.Interrupt, syscall.SIGTERM)
 
-        _ = os.Remove(socketPath)
-        
-        _ = l.Close()
-        os.Exit(0)
-    }()
+	go func() {
+		<-sigCleanup
+		fmt.Println("\nShutting down tuiwall-master...")
+
+		cmdMu.Lock()
+		if currentCmd != nil && currentCmd.Process != nil {
+			_ = currentCmd.Process.Kill()
+		}
+		cmdMu.Unlock()
+
+		_ = os.Remove(socketPath)
+
+		_ = l.Close()
+		os.Exit(0)
+	}()
 
 	_ = exec.Command("tmux", "wait-for", "-S", "tuiwall_ready").Run()
-    
+
 	var clients []net.Conn
 	var mu sync.Mutex
 
@@ -1251,7 +1259,9 @@ func runMaster() {
 						cw, _, _ := tmux.CurrentClientSize()
 						mw = cw
 					}
-					if mw <= 0 { mw = 80 }
+					if mw <= 0 {
+						mw = 80
+					}
 
 					_ = pty.Setsize(currentPty, &pty.Winsize{
 						Rows: uint16(HEADER_HEIGHT),
@@ -1280,7 +1290,7 @@ func runMaster() {
 	for {
 		preset := resolvePreset()
 		startPresetWithPTY(preset, &clients, &mu)
-		time.Sleep(100 * time.Millisecond) 
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -1309,17 +1319,17 @@ func blankScreen() {
 
 func runHeader() {
 	const (
-		DEBOUNCE       = 350 * time.Millisecond
-		RETRY_BACKOFF  = 1 * time.Second
-		TICK           = 250 * time.Millisecond
+		DEBOUNCE         = 350 * time.Millisecond
+		RETRY_BACKOFF    = 1 * time.Second
+		TICK             = 250 * time.Millisecond
 		FAST_EXIT_CUTOFF = 500 * time.Millisecond
 	)
 
 	paneID := strings.TrimSpace(os.Getenv("TMUX_PANE"))
 
 	forceRedraw := func() {
-   		 // Clear entire pane and redraw background
-   	// 	 fmt.Print("\x1b[2J\x1b[H")
+		// Clear entire pane and redraw background
+		// 	 fmt.Print("\x1b[2J\x1b[H")
 	}
 
 	blankScreen := func() {
@@ -1347,10 +1357,10 @@ func runHeader() {
 	}
 
 	var (
-		curPreset      string
-		pendingPreset  string
-		pendingSince   time.Time
-		switchBlanked  bool
+		curPreset     string
+		pendingPreset string
+		pendingSince  time.Time
+		switchBlanked bool
 
 		cmd            *exec.Cmd
 		nextStartAfter time.Time
@@ -1427,7 +1437,7 @@ func runHeader() {
 					_ = tmux.ResizePaneHeight(paneID, HEADER_HEIGHT)
 				}
 
-				 forceRedraw()
+				forceRedraw()
 			default:
 				// Exit cleanup
 				killChild()
@@ -1474,15 +1484,15 @@ func runHeader() {
 		switchBlanked = false
 
 		if cmd == nil && curPreset != "" && now.After(nextStartAfter) {
-   			 if _, ok := presetScriptPath(curPreset); ok {
-       			 	startPreset(curPreset)
-			 }
+			if _, ok := presetScriptPath(curPreset); ok {
+				startPreset(curPreset)
+			}
 		}
 	}
 }
 
 func renderFallbackHeader(preset string) {
-	var H = HEADER_HEIGHT 
+	var H = HEADER_HEIGHT
 	prev := make([]string, H)
 
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -1519,7 +1529,7 @@ func renderFallbackHeader(preset string) {
 
 func listPresets() ([]PresetMetadata, error) {
 	seen := map[string]bool{}
-	var out []PresetMetadata 
+	var out []PresetMetadata
 
 	for _, dir := range presetDirs() {
 		scanPresetDir(dir, seen, &out)
@@ -1608,38 +1618,38 @@ func headerKeyForWindow(windowID string) string {
 
 // Ensure header exists for one window
 func ensureHeaderForWindow(exePath, windowID string) {
-    if existingID, ok := tmux.FindHeaderPaneInWindow(windowID); ok {
-        _ = tmux.ResizePaneHeight(existingID, HEADER_HEIGHT)
-        return 
-    }
+	if existingID, ok := tmux.FindHeaderPaneInWindow(windowID); ok {
+		_ = tmux.ResizePaneHeight(existingID, HEADER_HEIGHT)
+		return
+	}
 
-    lockKey := fmt.Sprintf("@tuiwall_lock_%s", windowID)
-    lock, _ := tmux.GetGlobalOption(lockKey)
-    if strings.TrimSpace(lock) == "1" {
-        return
-    }
-    _ = tmux.SetGlobalOption(lockKey, "1")
-    defer tmux.UnsetGlobalOption(lockKey)
+	lockKey := fmt.Sprintf("@tuiwall_lock_%s", windowID)
+	lock, _ := tmux.GetGlobalOption(lockKey)
+	if strings.TrimSpace(lock) == "1" {
+		return
+	}
+	_ = tmux.SetGlobalOption(lockKey, "1")
+	defer tmux.UnsetGlobalOption(lockKey)
 
-    mirrorCmd := shellEscape(exePath) + " _mirror"
-    
-    // Command: tmux split-window -t <win> -v -b -l <height> -P -F "#{pane_id}" <cmd>
-    cmd := exec.Command("tmux", "split-window", 
-        "-t", windowID,
-	"-d", // Detached 
-        "-v", "-b", // Top split
-        "-l", strconv.Itoa(HEADER_HEIGHT), 
-        "-P", "-F", "#{pane_id}", 
-        mirrorCmd,
-    )
+	mirrorCmd := shellEscape(exePath) + " _mirror"
 
-    out, err := cmd.Output()
-    if err != nil {
-        return
-    }
+	// Command: tmux split-window -t <win> -v -b -l <height> -P -F "#{pane_id}" <cmd>
+	cmd := exec.Command("tmux", "split-window",
+		"-t", windowID,
+		"-d",       // Detached
+		"-v", "-b", // Top split
+		"-l", strconv.Itoa(HEADER_HEIGHT),
+		"-P", "-F", "#{pane_id}",
+		mirrorCmd,
+	)
 
-    newPaneID := strings.TrimSpace(string(out))
-    _ = tmux.SetPaneOption(newPaneID, "@tuiwall_header", "1")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+
+	newPaneID := strings.TrimSpace(string(out))
+	_ = tmux.SetPaneOption(newPaneID, "@tuiwall_header", "1")
 }
 
 // Ensure headers exist for all windows across server
@@ -1678,7 +1688,7 @@ func respawnAllHeaders(exePath string) {
 		_ = exec.Command(
 			"tmux",
 			"respawn-pane",
-			"-k",           
+			"-k",
 			"-t", paneID,
 			cmd,
 		).Run()
@@ -1716,322 +1726,321 @@ func removeHooks() {
 }
 
 func lockKeyForWindow(windowID string) string {
-    return "@tuiwall_lock_" + windowID
+	return "@tuiwall_lock_" + windowID
 }
 
 func presetHomeDir() (string, error) {
-    cfg, err := os.UserConfigDir()
-    if err != nil || strings.TrimSpace(cfg) == "" {
-        return "", fmt.Errorf("could not determine user config dir")
-    }
-    return filepath.Join(cfg, "tuiwall", "presets"), nil
+	cfg, err := os.UserConfigDir()
+	if err != nil || strings.TrimSpace(cfg) == "" {
+		return "", fmt.Errorf("could not determine user config dir")
+	}
+	return filepath.Join(cfg, "tuiwall", "presets"), nil
 }
 
 func validPresetName(name string) bool {
-    if name == "" || name == "." || name == ".." {
-        return false
-    }
-    for _, r := range name {
-        if (r >= 'a' && r <= 'z') ||
-            (r >= 'A' && r <= 'Z') ||
-            (r >= '0' && r <= '9') ||
-            r == '_' || r == '-' {
-            continue
-        }
-        return false
-    }
-    return true
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func presetScriptPathStrict(preset string) (string, error) {
-    p, ok := presetScriptPath(preset)  
-    if !ok || strings.TrimSpace(p) == "" {
-        return "", fmt.Errorf("preset %q not found", preset)
-    }
-    return p, nil
+	p, ok := presetScriptPath(preset)
+	if !ok || strings.TrimSpace(p) == "" {
+		return "", fmt.Errorf("preset %q not found", preset)
+	}
+	return p, nil
 }
 
 func presetNewFromTemplate(name string) error {
-    name = strings.TrimSpace(name)
-    if !validPresetName(name) {
-        return fmt.Errorf("invalid preset name %q (use letters/numbers/_/-)", name)
-    }
-    if name == "template" {
-        return fmt.Errorf("preset name %q is reserved", name)
-    }
+	name = strings.TrimSpace(name)
+	if !validPresetName(name) {
+		return fmt.Errorf("invalid preset name %q (use letters/numbers/_/-)", name)
+	}
+	if name == "template" {
+		return fmt.Errorf("preset name %q is reserved", name)
+	}
 
-    // Find the existing "template" preset in any of your presetDirs() locations.
-    templateScript, err := presetScriptPathStrict("template")
-    if err != nil {
-        return fmt.Errorf("missing template preset: %w\n Run: tuiwall install template", err)
-    }
-    templateDir := filepath.Dir(templateScript)
+	// Find the existing "template" preset in any of your presetDirs() locations.
+	templateScript, err := presetScriptPathStrict("template")
+	if err != nil {
+		return fmt.Errorf("missing template preset: %w\n Run: tuiwall install template", err)
+	}
+	templateDir := filepath.Dir(templateScript)
 
-    // Destination is always user config dir
-    home, err := presetHomeDir()
-    if err != nil {
-        return err
-    }
-    dstDir := filepath.Join(home, name)
+	// Destination is always user config dir
+	home, err := presetHomeDir()
+	if err != nil {
+		return err
+	}
+	dstDir := filepath.Join(home, name)
 
-    if _, err := os.Stat(dstDir); err == nil {
-        return fmt.Errorf("preset %q already exists at %s", name, dstDir)
-    }
+	if _, err := os.Stat(dstDir); err == nil {
+		return fmt.Errorf("preset %q already exists at %s", name, dstDir)
+	}
 
-    if err := os.MkdirAll(home, 0o755); err != nil {
-        return err
-    }
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
 
-    // Copy template/ -> ~/.config/tuiwall/presets/<name>/
-    if err := copyDir(templateDir, dstDir); err != nil {
-        return err
-    }
+	// Copy template/ -> ~/.config/tuiwall/presets/<name>/
+	if err := copyDir(templateDir, dstDir); err != nil {
+		return err
+	}
 
-    // Rename template.py -> <name>.py
-    oldPy := filepath.Join(dstDir, "template.py")
-    newPy := filepath.Join(dstDir, name+".py")
+	// Rename template.py -> <name>.py
+	oldPy := filepath.Join(dstDir, "template.py")
+	newPy := filepath.Join(dstDir, name+".py")
 
-    if _, err := os.Stat(oldPy); err == nil {
-        if err := os.Rename(oldPy, newPy); err != nil {
-            return err
-        }
-    } else {
-        if _, err2 := os.Stat(newPy); err2 != nil {
-            return fmt.Errorf("template preset must include template.py")
-        }
-    }
+	if _, err := os.Stat(oldPy); err == nil {
+		if err := os.Rename(oldPy, newPy); err != nil {
+			return err
+		}
+	} else {
+		if _, err2 := os.Stat(newPy); err2 != nil {
+			return fmt.Errorf("template preset must include template.py")
+		}
+	}
 
-    // Ensure the new script is actually runnable by the OS
-    if err := ensureExecutable(newPy); err != nil {
-        return fmt.Errorf("failed to set executable permissions: %w", err)
-    }
+	// Ensure the new script is actually runnable by the OS
+	if err := ensureExecutable(newPy); err != nil {
+		return fmt.Errorf("failed to set executable permissions: %w", err)
+	}
 
-    _ = replaceInFile(newPy, map[string]string{
-        "template": name,
-    })
+	_ = replaceInFile(newPy, map[string]string{
+		"template": name,
+	})
 
-    return nil
+	return nil
 }
 
 func presetNewFromCopy(copyName string, name string) error {
-    copyName = strings.TrimSpace(copyName)
-    name = strings.TrimSpace(name)
-    if !validPresetName(name) {
-        return fmt.Errorf("invalid preset name %q (use letters/numbers/_/-)", name)
-    }
-    if name == copyName {
-        return fmt.Errorf("preset name %q is reserved", name)
-    }
+	copyName = strings.TrimSpace(copyName)
+	name = strings.TrimSpace(name)
+	if !validPresetName(name) {
+		return fmt.Errorf("invalid preset name %q (use letters/numbers/_/-)", name)
+	}
+	if name == copyName {
+		return fmt.Errorf("preset name %q is reserved", name)
+	}
 
-    // Find the existing "template" preset in any of your presetDirs() locations.
-    copyScript, err := presetScriptPathStrict(copyName)
-    if err != nil {
-        return fmt.Errorf("missing template preset: %w", err)
-    }
-    copyPresetDir := filepath.Dir(copyScript)
+	// Find the existing "template" preset in any of your presetDirs() locations.
+	copyScript, err := presetScriptPathStrict(copyName)
+	if err != nil {
+		return fmt.Errorf("missing template preset: %w", err)
+	}
+	copyPresetDir := filepath.Dir(copyScript)
 
-    // Destination is always user config dir so users have a single place to edit/share.
-    home, err := presetHomeDir()
-    if err != nil {
-        return err
-    }
-    dstDir := filepath.Join(home, name)
+	// Destination is always user config dir so users have a single place to edit/share.
+	home, err := presetHomeDir()
+	if err != nil {
+		return err
+	}
+	dstDir := filepath.Join(home, name)
 
-    if _, err := os.Stat(dstDir); err == nil {
-        return fmt.Errorf("preset %q already exists at %s", name, dstDir)
-    }
+	if _, err := os.Stat(dstDir); err == nil {
+		return fmt.Errorf("preset %q already exists at %s", name, dstDir)
+	}
 
-    if err := os.MkdirAll(home, 0o755); err != nil {
-        return err
-    }
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
 
-    // Copy template/ -> ~/.config/tuiwall/presets/<name>/
-    if err := copyDir(copyPresetDir, dstDir); err != nil {
-        return err
-    }
+	// Copy template/ -> ~/.config/tuiwall/presets/<name>/
+	if err := copyDir(copyPresetDir, dstDir); err != nil {
+		return err
+	}
 
-    // Rename template.py -> <name>.py
-    oldPy := filepath.Join(dstDir, copyName + ".py")
-    newPy := filepath.Join(dstDir, name+".py")
+	// Rename template.py -> <name>.py
+	oldPy := filepath.Join(dstDir, copyName+".py")
+	newPy := filepath.Join(dstDir, name+".py")
 
-    if _, err := os.Stat(oldPy); err == nil {
-        if err := os.Rename(oldPy, newPy); err != nil {
-            return err
-        }
-    } else {
-        // Enforce convention: must end up with <name>.py
-        if _, err2 := os.Stat(newPy); err2 != nil {
-            return fmt.Errorf("template preset must include template.py (so it can be renamed)")
-        }
-    }
+	if _, err := os.Stat(oldPy); err == nil {
+		if err := os.Rename(oldPy, newPy); err != nil {
+			return err
+		}
+	} else {
+		// Enforce convention: must end up with <name>.py
+		if _, err2 := os.Stat(newPy); err2 != nil {
+			return fmt.Errorf("template preset must include template.py (so it can be renamed)")
+		}
+	}
 
-    _ = replaceInFile(newPy, map[string]string{
-	copyName: name,
-    })
+	_ = replaceInFile(newPy, map[string]string{
+		copyName: name,
+	})
 
-    return nil
+	return nil
 }
 
-
 func copyDir(src, dst string) error {
-    return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-        if err != nil {
-            return err
-        }
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
 
-        rel, err := filepath.Rel(src, path)
-        if err != nil {
-            return err
-        }
-        if rel == "." {
-            return os.MkdirAll(dst, info.Mode())
-        }
-        target := filepath.Join(dst, rel)
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(dst, info.Mode())
+		}
+		target := filepath.Join(dst, rel)
 
-        if info.IsDir() {
-            return os.MkdirAll(target, info.Mode())
-        }
-        return copyFile(path, target, info.Mode())
-    })
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		return copyFile(path, target, info.Mode())
+	})
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
-    in, err := os.Open(src)
-    if err != nil {
-        return err
-    }
-    defer in.Close()
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
 
-    out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-    if err != nil {
-        return err
-    }
-    defer out.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
 
-    if _, err := io.Copy(out, in); err != nil {
-        return err
-    }
-    return nil
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return nil
 }
 
 func replaceInFile(path string, replacements map[string]string) error {
-    b, err := os.ReadFile(path)
-    if err != nil {
-        return err
-    }
-    s := string(b)
-    for from, to := range replacements {
-       s = strings.ReplaceAll(s, from, to)
-    }
-    return os.WriteFile(path, []byte(s), 0o644)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	s := string(b)
+	for from, to := range replacements {
+		s = strings.ReplaceAll(s, from, to)
+	}
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 func openInEditor(path string) error {
-    ed := strings.TrimSpace(os.Getenv("EDITOR"))
-    if ed == "" {
-        ed = "vi"
-    }
-    cmd := exec.Command(ed, path)
-    cmd.Stdin = os.Stdin
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
-    return cmd.Run()
+	ed := strings.TrimSpace(os.Getenv("EDITOR"))
+	if ed == "" {
+		ed = "vi"
+	}
+	cmd := exec.Command(ed, path)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func presetUninstall(name string) error {
-    name = strings.TrimSpace(name)
-    if !validPresetName(name) {
-        return fmt.Errorf("invalid preset name %q", name)
-    }
-    if name == "template" {
-        return fmt.Errorf("refusing to uninstall %q (template is reserved)", name)
-    }
+	name = strings.TrimSpace(name)
+	if !validPresetName(name) {
+		return fmt.Errorf("invalid preset name %q", name)
+	}
+	if name == "template" {
+		return fmt.Errorf("refusing to uninstall %q (template is reserved)", name)
+	}
 
-    home, err := presetHomeDir()
-    if err != nil {
-        return err
-    }
-    dir := filepath.Join(home, name)
+	home, err := presetHomeDir()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(home, name)
 
-    // Refuse if it doesn't exist
-    st, err := os.Stat(dir)
-    if err != nil {
-        if os.IsNotExist(err) {
-            return fmt.Errorf("preset %q is not installed in %s", name, home)
-        }
-        return err
-    }
-    if !st.IsDir() {
-        return fmt.Errorf("expected %s to be a directory", dir)
-    }
+	// Refuse if it doesn't exist
+	st, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("preset %q is not installed in %s", name, home)
+		}
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("expected %s to be a directory", dir)
+	}
 
-    cleanHome := filepath.Clean(home) + string(os.PathSeparator)
-    cleanDir := filepath.Clean(dir) + string(os.PathSeparator)
-    if !strings.HasPrefix(cleanDir, cleanHome) {
-        return fmt.Errorf("refusing to remove path outside preset home")
-    }
+	cleanHome := filepath.Clean(home) + string(os.PathSeparator)
+	cleanDir := filepath.Clean(dir) + string(os.PathSeparator)
+	if !strings.HasPrefix(cleanDir, cleanHome) {
+		return fmt.Errorf("refusing to remove path outside preset home")
+	}
 
-    return os.RemoveAll(dir)
+	return os.RemoveAll(dir)
 }
- 
+
 func presetInstall(src string) error {
-    src = strings.TrimSpace(src)
-    if src == "template" {
-        return installEmbeddedTemplate()
-    }
+	src = strings.TrimSpace(src)
+	if src == "template" {
+		return installEmbeddedTemplate()
+	}
 
-    if src == "" {
-        return fmt.Errorf("usage: tuiwall install <name|path|git-url>")
-    }
+	if src == "" {
+		return fmt.Errorf("usage: tuiwall install <name|path|git-url>")
+	}
 
-    isShortName := !strings.Contains(src, "/") && !strings.Contains(src, ".") && !strings.Contains(src, "@")
-    
-    if isShortName {
-        fmt.Printf("--> Fetching '%s' from community repository...\n", src)
-        return presetInstallFromGit("https://github.com/Mug-Costanza/tuiwall-presets.git", src)
-    }
+	isShortName := !strings.Contains(src, "/") && !strings.Contains(src, ".") && !strings.Contains(src, "@")
 
-    if looksLikeGitRemote(src) {
-        return presetInstallFromGit(src, "") 
-    }
+	if isShortName {
+		fmt.Printf("--> Fetching '%s' from community repository...\n", src)
+		return presetInstallFromGit("https://github.com/Mug-Costanza/tuiwall-presets.git", src)
+	}
 
-    return presetInstallFromPath(src)
+	if looksLikeGitRemote(src) {
+		return presetInstallFromGit(src, "")
+	}
+
+	return presetInstallFromPath(src)
 }
 
 func looksLikeGitRemote(s string) bool {
-    s = strings.TrimSpace(s)
-    return strings.HasPrefix(s, "http://") ||
-        strings.HasPrefix(s, "https://") ||
-        strings.HasPrefix(s, "git@") ||
-        strings.HasSuffix(s, ".git")
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "http://") ||
+		strings.HasPrefix(s, "https://") ||
+		strings.HasPrefix(s, "git@") ||
+		strings.HasSuffix(s, ".git")
 }
 
 func presetInstallFromPath(path string) error {
-    path = filepath.Clean(path)
+	path = filepath.Clean(path)
 
-    st, err := os.Stat(path)
-    if err != nil {
-        return err
-    }
-    if !st.IsDir() {
-        return fmt.Errorf("preset source must be a directory: %s", path)
-    }
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("preset source must be a directory: %s", path)
+	}
 
-    name := filepath.Base(path)
-    if !validPresetName(name) {
-        return fmt.Errorf("invalid preset name %q", name)
-    }
-    if name == "template" {
-        return fmt.Errorf("preset name %q is reserved", name)
-    }
+	name := filepath.Base(path)
+	if !validPresetName(name) {
+		return fmt.Errorf("invalid preset name %q", name)
+	}
+	if name == "template" {
+		return fmt.Errorf("preset name %q is reserved", name)
+	}
 
-    // Require <name>.py in that directory
-    script := filepath.Join(path, name+".py")
-    if st, err := os.Stat(script); err != nil || st.IsDir() {
-        return fmt.Errorf("preset directory must contain %s", name+".py")
-    }
+	// Require <name>.py in that directory
+	script := filepath.Join(path, name+".py")
+	if st, err := os.Stat(script); err != nil || st.IsDir() {
+		return fmt.Errorf("preset directory must contain %s", name+".py")
+	}
 
-    return installDirToUserHome(name, path)
+	return installDirToUserHome(name, path)
 }
 
 func presetInstallFromGit(remote string, requestedFolder string) error {
@@ -2069,26 +2078,26 @@ func presetInstallFromGit(remote string, requestedFolder string) error {
 }
 
 func installDirToUserHome(name, srcDir string) error {
-    home, err := presetHomeDir()
-    if err != nil {
-        return err
-    }
-    dstDir := filepath.Join(home, name)
+	home, err := presetHomeDir()
+	if err != nil {
+		return err
+	}
+	dstDir := filepath.Join(home, name)
 
-    if _, err := os.Stat(dstDir); err == nil {
-        return fmt.Errorf("preset %q already installed at %s", name, dstDir)
-    }
+	if _, err := os.Stat(dstDir); err == nil {
+		return fmt.Errorf("preset %q already installed at %s", name, dstDir)
+	}
 
-    if err := os.MkdirAll(home, 0o755); err != nil {
-        return err
-    }
-    if err := copyDir(srcDir, dstDir); err != nil {
-        return err
-    }
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	if err := copyDir(srcDir, dstDir); err != nil {
+		return err
+	}
 
-    fmt.Println("installed preset:", name)
-    fmt.Println("to:", dstDir)
-    return nil
+	fmt.Println("installed preset:", name)
+	fmt.Println("to:", dstDir)
+	return nil
 }
 
 func findPresetDirInRepo(repoPath string, remote string) (dir string, name string, err error) {
@@ -2096,10 +2105,14 @@ func findPresetDirInRepo(repoPath string, remote string) (dir string, name strin
 	if st, err := os.Stat(presetsDir); err == nil && st.IsDir() {
 		entries, _ := os.ReadDir(presetsDir)
 		for _, e := range entries {
-			if !e.IsDir() { continue }
+			if !e.IsDir() {
+				continue
+			}
 			n := e.Name()
-			if !validPresetName(n) || n == "template" { continue }
-			
+			if !validPresetName(n) || n == "template" {
+				continue
+			}
+
 			d := filepath.Join(presetsDir, n)
 			s := filepath.Join(d, n+".py")
 			if st, e2 := os.Stat(s); e2 == nil && !st.IsDir() {
@@ -2119,7 +2132,7 @@ func findPresetDirInRepo(repoPath string, remote string) (dir string, name strin
 			n := e.Name()
 			// Ignore hidden dirs like .git and reserved names
 			if strings.HasPrefix(n, ".") || !validPresetName(n) || n == "template" {
-				continue 
+				continue
 			}
 			scriptCheck := filepath.Join(repoPath, n, n+".py")
 			if st, err := os.Stat(scriptCheck); err == nil && !st.IsDir() {
@@ -2165,57 +2178,57 @@ func findPresetDirInRepo(repoPath string, remote string) (dir string, name strin
 }
 
 func derivePresetNameFromRemote(remote string) string {
-    r := strings.TrimSpace(remote)
+	r := strings.TrimSpace(remote)
 
-    // Strip trailing .git
-    r = strings.TrimSuffix(r, ".git")
+	// Strip trailing .git
+	r = strings.TrimSuffix(r, ".git")
 
-    // Take last path segment after / or :
-    seg := r
-    if i := strings.LastIndex(seg, "/"); i >= 0 {
-        seg = seg[i+1:]
-    }
-    if i := strings.LastIndex(seg, ":"); i >= 0 {
-        seg = seg[i+1:]
-    }
-    seg = strings.TrimSpace(seg)
-    if seg == "" {
-        return ""
-    }
+	// Take last path segment after / or :
+	seg := r
+	if i := strings.LastIndex(seg, "/"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	if i := strings.LastIndex(seg, ":"); i >= 0 {
+		seg = seg[i+1:]
+	}
+	seg = strings.TrimSpace(seg)
+	if seg == "" {
+		return ""
+	}
 
-    // If repo is named tuiwall-preset-XYZ, install name XYZ
-    if strings.HasPrefix(seg, "tuiwall-preset-") {
-        seg = strings.TrimPrefix(seg, "tuiwall-preset-")
-    }
-    seg = strings.Trim(seg, " \t\n\r")
-    return seg
+	// If repo is named tuiwall-preset-XYZ, install name XYZ
+	if strings.HasPrefix(seg, "tuiwall-preset-") {
+		seg = strings.TrimPrefix(seg, "tuiwall-preset-")
+	}
+	seg = strings.Trim(seg, " \t\n\r")
+	return seg
 }
 
 func presetInstalledDirStrict(name string) (string, error) {
-    name = strings.TrimSpace(name)
-    if !validPresetName(name) {
-        return "", fmt.Errorf("invalid preset name %q", name)
-    }
-    home, err := presetHomeDir()
-    if err != nil {
-        return "", err
-    }
-    dir := filepath.Join(home, name)
-    st, err := os.Stat(dir)
-    if err != nil {
-        if os.IsNotExist(err) {
-            return "", fmt.Errorf("preset %q is not installed in %s", name, home)
-        }
-        return "", err
-    }
-    if !st.IsDir() {
-        return "", fmt.Errorf("expected preset dir %s to be a directory", dir)
-    }
-    script := filepath.Join(dir, name+".py")
-    if st2, err := os.Stat(script); err != nil || st2.IsDir() {
-        return "", fmt.Errorf("installed preset must contain %s", name+".py")
-    }
-    return dir, nil
+	name = strings.TrimSpace(name)
+	if !validPresetName(name) {
+		return "", fmt.Errorf("invalid preset name %q", name)
+	}
+	home, err := presetHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, name)
+	st, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("preset %q is not installed in %s", name, home)
+		}
+		return "", err
+	}
+	if !st.IsDir() {
+		return "", fmt.Errorf("expected preset dir %s to be a directory", dir)
+	}
+	script := filepath.Join(dir, name+".py")
+	if st2, err := os.Stat(script); err != nil || st2.IsDir() {
+		return "", fmt.Errorf("installed preset must contain %s", name+".py")
+	}
+	return dir, nil
 }
 
 func presetUploadToGit(name, remote string) error {
@@ -2250,10 +2263,14 @@ func presetUploadToGit(name, remote string) error {
 		return err
 	}
 
-	if err := runGit(tmp, "git", "init"); err != nil { return err }
+	if err := runGit(tmp, "git", "init"); err != nil {
+		return err
+	}
 	_ = runGit(tmp, "git", "checkout", "-b", "main")
-	if err := runGit(tmp, "git", "add", "."); err != nil { return err }
-	
+	if err := runGit(tmp, "git", "add", "."); err != nil {
+		return err
+	}
+
 	commitMsg := "Add tuiwall preset " + name
 	if err := runGit(tmp, "git", "commit", "-m", commitMsg); err != nil {
 		return fmt.Errorf("git commit failed: %w", err)
@@ -2354,65 +2371,75 @@ func communityRepoPR(name string) error {
 }
 
 func runGit(dir string, name string, args ...string) error {
-    cmd := exec.Command(name, args...)
-    cmd.Dir = dir
-    cmd.Stdin = os.Stdin
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
-    return cmd.Run()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func presetZip(name string) (string, error) {
-    name = strings.TrimSpace(name)
-    if name == "template" {
-        return "", fmt.Errorf("refusing to zip %q (template is reserved)", name)
-    }
-    srcDir, err := presetInstalledDirStrict(name)
-    if err != nil {
-        return "", err
-    }
+	name = strings.TrimSpace(name)
+	if name == "template" {
+		return "", fmt.Errorf("refusing to zip %q (template is reserved)", name)
+	}
+	srcDir, err := presetInstalledDirStrict(name)
+	if err != nil {
+		return "", err
+	}
 
-    // Write zip to current dir
-    out := name + ".zip"
-    f, err := os.Create(out)
-    if err != nil {
-        return "", err
-    }
-    defer f.Close()
+	// Write zip to current dir
+	out := name + ".zip"
+	f, err := os.Create(out)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
 
-    zw := zip.NewWriter(f)
-    defer zw.Close()
+	zw := zip.NewWriter(f)
+	defer zw.Close()
 
-    base := filepath.Base(srcDir)
-    root := filepath.Dir(srcDir)
+	base := filepath.Base(srcDir)
+	root := filepath.Dir(srcDir)
 
-    err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
-        if err != nil { return err }
-        if info.IsDir() { return nil }
+	err = filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
 
-        rel, err := filepath.Rel(root, path)
-        if err != nil { return err }
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
 
-        // Ensure it zips as <name>/...
-        if !strings.HasPrefix(rel, base+string(os.PathSeparator)) {
-            return nil
-        }
+		// Ensure it zips as <name>/...
+		if !strings.HasPrefix(rel, base+string(os.PathSeparator)) {
+			return nil
+		}
 
-        w, err := zw.Create(rel)
-        if err != nil { return err }
+		w, err := zw.Create(rel)
+		if err != nil {
+			return err
+		}
 
-        in, err := os.Open(path)
-        if err != nil { return err }
-        defer in.Close()
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
 
-        _, err = io.Copy(w, in)
-        return err
-    })
-    if err != nil {
-        return "", err
-    }
+		_, err = io.Copy(w, in)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
 
-    return out, nil
+	return out, nil
 }
 
 func runMirror() {
@@ -2422,10 +2449,14 @@ func runMirror() {
 
 	for i := 0; i < 15; i++ {
 		conn, err = net.Dial("unix", socketPath)
-		if err == nil { break }
+		if err == nil {
+			break
+		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer conn.Close()
 
 	// Hide cursor (\x1b[?25l), disable wrap (\x1b[?7l), clear (\x1b[2J), home (\x1b[H)
@@ -2447,7 +2478,3 @@ func runMirror() {
 		os.Exit(0)
 	}
 }
-
-
-
-
