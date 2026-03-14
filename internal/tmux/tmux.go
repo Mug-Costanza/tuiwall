@@ -158,8 +158,10 @@ func ListGlobalOptionsWithPrefix(prefix string) (map[string]string, error) {
 		for _, f := range fields {
 			if strings.HasPrefix(f, prefix) {
 				key := strings.Trim(f, `"`)
-				v, _ := GetGlobalOption(key)
-				res[key] = strings.TrimSpace(v)
+				v, err := GetGlobalOption(key)
+				if err == nil {
+					res[key] = strings.TrimSpace(v)
+				}
 				break
 			}
 		}
