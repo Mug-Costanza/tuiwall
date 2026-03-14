@@ -58,7 +58,7 @@ OR install the correct binary from the latest release (install Darwin for MacOS)
 
 3.) Move the binary to /usr/local/bin
 ```bash
-mv tuiwall /usr/local/bin
+sudo mv tuiwall /usr/local/bin
 ```
 
 4.) Enable tuiwall
