@@ -19,7 +19,7 @@ dist/
 
 
 # Local binaries from your .sh scripts
-tuiwall
+# tuiwall
 tuiwall-*
 tuiwall-linux-*
 tuiwall-darwin-*
