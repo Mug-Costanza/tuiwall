@@ -59,22 +59,12 @@ go install github.com/Mug-Costanza/tuiwall@latest
 mv tuiwall /usr/local/bin
 ```
 
-4.) Install the template preset
-```bash
-tuiwall install template
-```
-
-5.) Set preset to template
-```bash
-tuiwall set template
-```
-
-6.) Enable tuiwall
+4.) Enable tuiwall
 ```bash
 tuiwall enable
 ```
 
-9.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
+5.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
 
 ### USAGE
 
