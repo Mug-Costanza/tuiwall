@@ -19,7 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"tuiwall/internal/tmux"
+	"github.com/Mug-Costanza/tuiwall/internal/tmux"
 )
 
 var embeddedPresets embed.FS
