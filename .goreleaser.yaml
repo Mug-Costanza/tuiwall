@@ -11,26 +11,23 @@ project_name: tuiwall
 
 before:
   hooks:
-    # You may remove this if you don't use go modules.
     - go mod tidy
-    # you may remove this if you don't need go generate
     - go generate ./...
 
 builds:
-  - main: ./cmd/tuiwall   # Point to your package main directory
-    binary: tuiwall       # The final name of your binary
+  - main: ./cmd/tuiwall
+    binary: tuiwall
     env:
-      - CGO_ENABLED=0     # Recommended for portable, static binaries
+      - CGO_ENABLED=0
     goos:
       - linux
-      - darwin            # Builds for both Linux and Mac
+      - darwin
     goarch:
       - amd64
-      - arm64             # Builds for Intel and Apple Silicon
+      - arm64
 
 archives:
   - formats: [tar.gz]
-    # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
@@ -38,10 +35,23 @@ archives:
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
-    # use zip for windows archives
     format_overrides:
       - goos: windows
         formats: [zip]
+
+# --- NEW BREW SECTION ---
+brews:
+  - name: tuiwall
+    repository:
+      owner: mug-costanza
+      name: homebrew-tuiwall
+    directory: Formula
+    homepage: "https://github.com/Mug-Costanza/tuiwall"
+    description: "CLI wallpaper engine for the terminal"
+    test: |
+      system "#{bin}/tuiwall --version"
+    install: |
+      bin.install "tuiwall"
 
 changelog:
   sort: asc
@@ -52,7 +62,5 @@ changelog:
 
 release:
   footer: >-
-
     ---
-
     Released by [GoReleaser](https://github.com/goreleaser/goreleaser).
