@@ -47,7 +47,7 @@ Improve the UX and customization options of terminal environments.
 
 ### INSTALLATION
 
-1.) Install the correct binary
+1.) Install the correct binary from the latest release (install Darwin for MacOS)
 ```bash
 go install github.com/Mug-Costanza/tuiwall@latest
 ```
