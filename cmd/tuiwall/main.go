@@ -2087,6 +2087,7 @@ func presetInstallFromGit(remote string, requestedFolder string) error {
 	fmt.Println("--> Connecting to remote...")
 	if requestedFolder != "" {
 		cloneArgs := []string{"clone", "--depth", "1", "--filter=blob:none", "--sparse", remote, tmp}
+
 		if err := exec.Command("git", cloneArgs...).Run(); err != nil {
 			return fmt.Errorf("git clone failed: %w", err)
 		}
@@ -2193,6 +2194,10 @@ func findPresetDirInRepo(repoPath string, remote string) (dir string, name strin
 
 	var pyFiles []string
 	for _, e := range rootEntries {
+		if e.Name() == "generate_readme.py" {
+			continue
+		}
+
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".py") {
 			pyFiles = append(pyFiles, e.Name())
 		}
