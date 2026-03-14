@@ -36,7 +36,7 @@ Improve the UX and customization options of terminal environments.
 
 ### Dependencies
 * **Go**
-* **Python 3** (Standard library only; no external packages required)
+* **Python** (Standard library only; no external packages required)
 * **tmux**
 * **git**
 * **gh** (GitHub CLI for community features)
