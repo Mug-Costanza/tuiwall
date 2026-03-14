@@ -52,7 +52,10 @@ Improve the UX and customization options of terminal environments.
 go install github.com/Mug-Costanza/tuiwall/cmd/tuiwall@latest
 ```
 
-OR install the correct binary from the latest release (install Darwin for MacOS), then rename the binary to tuiwall
+OR install the correct binary from the latest release (install Darwin for MacOS), then rename the binary to tuiwall, then run this command:
+```bash
+chmod +x tuiwall
+```
 
 2.) Rename binary to tuiwall 
 
