@@ -9,8 +9,12 @@ dist/
 *.swp
 *.swo
 *.swn
+*.swm
+*.swl
+*.s*
 .sw?
-
+# Catch hidden swap files specifically
+.*.sw?
 
 # Undo and backup files (optional but recommended)
 *.un~
