@@ -47,10 +47,12 @@ Improve the UX and customization options of terminal environments.
 
 ### INSTALLATION
 
-1.) Install the correct binary from the latest release (install Darwin for MacOS) or run this command:
+1.) Run this command:
 ```bash
-go install github.com/Mug-Costanza/tuiwall@latest
+go install github.com/Mug-Costanza/tuiwall/cmd/tuiwall@latest
 ```
+
+OR install the correct binary from the latest release (install Darwin for MacOS) and rename the binary to tuiwall
 
 2.) Rename binary to tuiwall 
 
