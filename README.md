@@ -65,7 +65,7 @@ tuiwall enable
 
 1.) Run this commmand:
 ```bash
-go install github.com/Mug-Costanza/tuiwall/cmd/tuiwall@latest
+go install github.com/Mug-Costanza/tuiwall@latest
 ```
 2.) Enable tuiwall
 ```bash
