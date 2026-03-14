@@ -8,6 +8,7 @@ import "archive/zip"
 import (
 	"embed"
 	"fmt"
+	"github.com/Mug-Costanza/tuiwall/internal/tmux"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 	"io"
@@ -19,7 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"github.com/Mug-Costanza/tuiwall/internal/tmux"
 )
 
 var embeddedPresets embed.FS
@@ -498,42 +498,42 @@ func main() {
 		fmt.Println("tuiwall reset")
 
 	/*
-		case "height":
-		if len(os.Args) < 3 {
-			fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
-		}
+			case "height":
+			if len(os.Args) < 3 {
+				fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
+			}
 
-		newHeight, e := strconv.Atoi(strings.TrimSpace(os.Args[2]))
+			newHeight, e := strconv.Atoi(strings.TrimSpace(os.Args[2]))
 
-		if e != nil {
-			fatal(e)
-		}
+			if e != nil {
+				fatal(e)
+			}
 
-		if newHeight < 2 || newHeight > 10 {
-			fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
-		}
+			if newHeight < 2 || newHeight > 10 {
+				fatal(fmt.Errorf("usage: tuiwall height <2-10>"))
+			}
 
-		if err := tmux.SetGlobalOption("@tuiwall_height", strings.TrimSpace(os.Args[2])); err != nil  {
-			fatal(err)
-		}
-
-		fmt.Println("set height to", newHeight)
-		HEADER_HEIGHT = newHeight
-
-	enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
-		if strings.TrimSpace(enabled) == "1" {
-			// disable
-			mustInTmux()
-			exe := tmux.MustExecutablePath()
-			if err := disable(); err != nil {
+			if err := tmux.SetGlobalOption("@tuiwall_height", strings.TrimSpace(os.Args[2])); err != nil  {
 				fatal(err)
 			}
 
-			// reenable
-			if err:= enable(exe); err != nil {
-				fatal(err)
+			fmt.Println("set height to", newHeight)
+			HEADER_HEIGHT = newHeight
+
+		enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
+			if strings.TrimSpace(enabled) == "1" {
+				// disable
+				mustInTmux()
+				exe := tmux.MustExecutablePath()
+				if err := disable(); err != nil {
+					fatal(err)
+				}
+
+				// reenable
+				if err:= enable(exe); err != nil {
+					fatal(err)
+				}
 			}
-		}
 	*/
 
 	case "_reset_on_resize":
