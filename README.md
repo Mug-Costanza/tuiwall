@@ -48,9 +48,10 @@ Improve the UX and customization options of terminal environments.
 ### INSTALLATION
 
 #### INSTALL WITH BREW
-1.) Run this command:
+1.) Run these commands:
 ```bash
-brew install mug-costanza/tuiwall
+brew tap mug-costanza/tuiwall
+brew install tuiwall
 ```
 2.) Enable tuiwall
 ```bash
