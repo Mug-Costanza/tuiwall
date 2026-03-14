@@ -1,25 +1,25 @@
 package main
 
-import "os/signal"
-import "syscall"
-import "strconv"
-import "archive/zip"
-
 import (
+	"archive/zip"
 	"embed"
 	"fmt"
-	"github.com/Mug-Costanza/tuiwall/internal/tmux"
-	"github.com/creack/pty"
-	"golang.org/x/sys/unix"
 	"io"
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/Mug-Costanza/tuiwall/internal/tmux"
+	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 var embeddedPresets embed.FS
