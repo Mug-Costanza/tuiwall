@@ -61,20 +61,6 @@ tuiwall enable
 3.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
 
 
-#### INSTALL WITH GO
-
-1.) Run this commmand:
-```bash
-go install github.com/Mug-Costanza/tuiwall@latest
-```
-2.) Enable tuiwall
-```bash
-tuiwall enable
-```
-
-3.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
-
-
 #### INSTALL DIRECTLY
 
 1.) Install the correct binary from the latest release (install Darwin for MacOS), then rename the binary to tuiwall, then run this command:
