@@ -35,6 +35,7 @@ https://github.com/Mug-Costanza/tuiwall-presets
 Improve the UX and customization options of terminal environments.
 
 ### Dependencies
+* **Go**
 * **Python 3** (Standard library only; no external packages required)
 * **tmux**
 * **git**
@@ -43,6 +44,37 @@ Improve the UX and customization options of terminal environments.
 * **vhs** (Required only for the record feature)
 
 ---
+
+### INSTALLATION
+
+1.) Install the correct binary
+```bash
+go install github.com/Mug-Costanza/tuiwall@latest
+```
+
+2.) Rename binary to tuiwall 
+
+3.) Move the binary to /usr/local/bin
+```bash
+mv tuiwall /usr/local/bin
+```
+
+4.) Install the template preset
+```bash
+tuiwall install template
+```
+
+5.) Set preset to template
+```bash
+tuiwall set template
+```
+
+6.) Enable tuiwall
+```bash
+tuiwall enable
+```
+
+9.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
 
 ### USAGE
 

@@ -2,9 +2,9 @@ package main
 
 import (
 	"archive/zip"
-	"embed"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -18,17 +18,39 @@ import (
 	"time"
 
 	"github.com/Mug-Costanza/tuiwall/internal/tmux"
+	"github.com/Mug-Costanza/tuiwall/internal/presets"
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
 )
-
-var embeddedPresets embed.FS
 
 func checkPlatformSupport() {
 	if getTermiosReq == 0 || setTermiosReq == 0 {
 		// This means the build tags didn't fire or the OS isn't supported
 		fatal(fmt.Errorf("unsupported operating system for PTY operations"))
 	}
+}
+
+func installAllEmbeddedPresets() error {
+	home, err := presetHomeDir()
+	if err != nil { return err }
+
+	return fs.WalkDir(presets.Data, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == "." { return err }
+
+		targetPath := filepath.Join(home, path)
+
+		if d.IsDir() {
+			return os.MkdirAll(targetPath, 0755)
+		}
+
+		content, _ := presets.Data.ReadFile(path)
+		err = os.WriteFile(targetPath, content, 0644)
+		
+		if strings.HasSuffix(targetPath, ".py") {
+			_ = ensureExecutable(targetPath)
+		}
+		return err
+	})
 }
 
 func clearWindowStyles() {
@@ -66,28 +88,6 @@ func setupSignalHandler() {
 		_ = exec.Command("tmux", "set-window-option", "-g", "window-active-style", "default").Run()
 		os.Exit(0)
 	}()
-}
-
-func installEmbeddedTemplate() error {
-	home, err := presetHomeDir()
-	if err != nil {
-		return err
-	}
-
-	dstDir := filepath.Join(home, "template")
-	if _, err := os.Stat(dstDir); err == nil {
-		return fmt.Errorf("template already installed")
-	}
-
-	_ = os.MkdirAll(dstDir, 0755)
-
-	// Read from the embedded filesystem
-	content, err := embeddedPresets.ReadFile("internal/presets/template/template.py")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(filepath.Join(dstDir, "template.py"), content, 0644)
 }
 
 func getPythonCmd() string {
@@ -338,8 +338,38 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "enable":
+case "enable":
 		mustInTmux()
+
+		// 1. Resolve the home directory path
+		home, err := presetHomeDir()
+		if err != nil {
+			fatal(err)
+		}
+
+		// 2. Check if the "template" preset is missing
+		templatePath := filepath.Join(home, "template")
+		_, err = os.Stat(templatePath)
+		
+		if os.IsNotExist(err) {
+			fmt.Println("--> Core presets (template) not found. Unpacking starter pack...")
+			fmt.Println("Installed the template, clock, stats, matrix, rain, ocean, donut, and snowfall presets")
+			fmt.Println("Welcome to TUIWALL")
+			// Ensure the parent directory exists first
+			_ = os.MkdirAll(home, 0755)
+			if err := installAllEmbeddedPresets(); err != nil {
+				fmt.Printf("Warning: failed to unpack presets: %v\n", err)
+			}
+		}
+
+		// 3. Ensure a default preset is set in tmux
+		preset, _ := tmux.GetGlobalOption("@tuiwall_preset")
+		cleanPreset := strings.TrimSpace(strings.ToLower(preset))
+		if cleanPreset == "" || cleanPreset == "null" {
+			_ = tmux.SetGlobalOption("@tuiwall_preset", "matrix")
+		}
+
+		// 4. Run the actual enablement
 		exe := tmux.MustExecutablePath()
 		if err := enable(exe); err != nil {
 			fatal(err)
@@ -375,7 +405,7 @@ func main() {
 		enabled, _ := tmux.GetGlobalOption("@tuiwall_enabled")
 		preset, _ := tmux.GetGlobalOption("@tuiwall_preset")
 		if strings.TrimSpace(preset) == "" {
-			preset = "clock"
+			preset = "UNSET"
 		}
 
 		heightStr, err := tmux.GetGlobalOption("@tuiwall_height")
@@ -1986,7 +2016,7 @@ func presetUninstall(name string) error {
 func presetInstall(src string) error {
 	src = strings.TrimSpace(src)
 	if src == "template" {
-		return installEmbeddedTemplate()
+		return installAllEmbeddedPresets() 
 	}
 
 	if src == "" {
