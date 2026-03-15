@@ -137,7 +137,7 @@ tuiwall uninstall <preset-name>
 
 ### CREATING / CONTRIBUTING PRESETS
 
-**Create, edit, or locate a preset:**
+**Create, edit, copy, or locate a preset:**
 ```bash
 tuiwall preset new <name>
 ```
@@ -146,6 +146,9 @@ tuiwall preset edit <name>
 ```
 ```bash
 tuiwall preset path <name>
+```
+```bash
+tuiwall preset copy <preset-name> <name>
 ```
 
 **Display preset metadata and attach images:**
@@ -162,6 +165,9 @@ tuiwall record <preset-name>
 ```
 ```bash
 tuiwall upload <preset-name>
+```
+```bash
+tuiwall upload <preset-name> <repo-url>
 ```
 
 ---
