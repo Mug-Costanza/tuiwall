@@ -63,24 +63,27 @@ tuiwall enable
 
 #### INSTALL DIRECTLY
 
-1.) Install the correct binary from the latest release (install Darwin for MacOS), then rename the binary to tuiwall, then run this command:
+1.) Install the correct binary from the latest release (install Darwin for MacOS)
+
+2.) Rename binary to tuiwall 
+
+3.) Run this command:
+
 ```bash
 chmod +x tuiwall
 ```
 
-2.) Rename binary to tuiwall 
-
-3.) Move the binary to /usr/local/bin
+4.) Move the binary to /usr/local/bin
 ```bash
 sudo mv tuiwall /usr/local/bin
 ```
 
-4.) Enable tuiwall
+5.) Enable tuiwall
 ```bash
 tuiwall enable
 ```
 
-5.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
+6.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
 
 ### USAGE
 
