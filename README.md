@@ -175,6 +175,11 @@ tuiwall upload <preset-name> <repo-url>
 ### WARNING
 **Vet every preset yourself via the editor prior to running, as each preset is a Python script.** Recommended presets can be downloaded from the community repo at: https://github.com/Mug-Costanza/tuiwall-presets
 
+### Donate
+Help me pay my rent
+
+https://buymeacoffee.com/mugcostanza
+
 
 
 
