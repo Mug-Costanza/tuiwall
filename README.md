@@ -29,7 +29,7 @@
 https://github.com/Mug-Costanza/tuiwall-presets
 
 ### What is this?
-**tuiwall** creates persistent, animated, or informative headers at the top of your tmux windows. It allows you to customize the top ten lines of your terminal workspace with everything from CPU monitors and elaborate animated ASCII art to API-driven displays (live stock charts, weather reporting, etc.), all driven by simple Python scripts.
+**tuiwall** creates customizable split pane headers at the top of your tmux windows. It allows you to customize the top ten lines of your terminal workspace with everything from CPU monitors and elaborate animated ASCII art to API-driven displays (live stock charts, weather reporting, etc.), all driven by simple Python scripts.
 
 ### Purpose
 Improve the UX and customization options of terminal environments.
