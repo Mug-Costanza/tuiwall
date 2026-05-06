@@ -60,6 +60,23 @@ tuiwall enable
 
 3.) Install additional templates from the <a href=https://github.com/Mug-Costanza/tuiwall-presets>preset repo</a>
 
+### Nix / NixOS
+
+Run directly:
+
+```sh
+nix run github:Mug-Costanza/tuiwall
+```
+
+Or add to your NixOS flake:
+
+```nix
+# In flake.nix inputs:
+tuiwall.url = "github:Mug-Costanza/tuiwall";
+
+# In your NixOS configuration:
+environment.systemPackages = [ inputs.tuiwall.packages.${pkgs.system}.default ];
+```
 
 #### INSTALL DIRECTLY
 
