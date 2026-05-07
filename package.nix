@@ -1,38 +1,41 @@
-{ lib, buildGoModule, fetchFromGitHub, makeWrapper
-, tmux, git, gh, vhs, python3
+{ lib
+, buildGoModule
+, makeWrapper
+, src
+, version
+, tmux
+, git
+, gh
+, vhs
+, python3
 }:
 
-buildGoModule rec {
+buildGoModule {
   pname = "tuiwall";
-  version = "0.1.0";
-
-  src = fetchFromGitHub {
-    owner = "Mug-Costanza";
-    repo = "tuiwall";
-    rev = "v${version}";
-    hash = "sha256-npPlo88saCiA6D3LrjJ8qQesmO3lI+LWEEagkbIavFU=";
-  };
+  inherit version src;
 
   vendorHash = "sha256-JjXY4EargMoCMtmcUHyQwFRnMMyBUoZTm0ROgnwJ8wg=";
+
+  subPackages = [ "cmd/tuiwall" ];
 
   nativeBuildInputs = [ makeWrapper ];
 
   postInstall = ''
     wrapProgram $out/bin/tuiwall \
       --prefix PATH : ${lib.makeBinPath [
-        tmux      # основная зависимость - создаёт split-pane сессии
-        git       # нужен для работы с preset репозиториями
-        gh        # github cli - для tuiwall upload/search (community features)
-        vhs       # только для tuiwall record - запись демо GIF
-        python3   # runtime для запуска preset-скриптов (стандартная библиотека)
+        tmux    # core dependency - creates split-pane sessions
+        git     # preset repository management
+        gh      # GitHub CLI - community features (upload/search)
+        vhs     # only for tuiwall record - demo GIF recording
+        python3 # preset script runtime (standard library only)
       ]}
   '';
 
-  meta = with lib; {
+  meta = {
     description = "CLI wallpaper engine for the terminal via tmux split panes";
     homepage = "https://github.com/Mug-Costanza/tuiwall";
-    license = licenses.mit;
+    license = lib.licenses.mit;
     mainProgram = "tuiwall";
-    platforms = platforms.unix;
+    platforms = lib.platforms.unix;
   };
 }
