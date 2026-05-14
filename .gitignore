@@ -32,4 +32,6 @@ tuiwall-darwin-*
 .DS_Store
 ._*
 
-
+# Nix binaries
+result
+result-*
