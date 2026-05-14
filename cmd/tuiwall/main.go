@@ -1742,7 +1742,17 @@ func installHooks(exePath string) {
 
 	_ = tmux.SetHookGlobal("client-attached", hookCmd)
 
-	resizeCmd := "run-shell -b " + shellEscape("tmux resize-window -t tuiwall-master:0 -x #{client_width} -y #{client_height} >/dev/null 2>&1 || true")
+	// After the window resizes, tmux redistributes pane heights proportionally,
+	// which breaks the fixed header height. We directly re-pin all header panes
+	// (identified by @tuiwall_header=1) to HEADER_HEIGHT without going through
+	// the async _update-master-size chain, which is too slow for rapid tiling
+	// layout changes (e.g. Hyprland).
+	resizeCmd := "run-shell -b " + shellEscape(
+    		"tmux resize-window -t tuiwall-master:0 -x #{client_width} -y #{client_height} 2>/dev/null || true; "+
+    		    "h=$(tmux show-option -gqv @tuiwall_height); h=${h:-10}; "+
+    		    "tmux list-panes -a -F '#{pane_id} #{@tuiwall_header}' | "+
+    		    "while IFS=' ' read -r id flag; do [ \"$flag\" = '1' ] && tmux resize-pane -t \"$id\" -y \"$h\" 2>/dev/null || true; done",
+	)
 	_ = tmux.SetHookGlobal("client-resized", resizeCmd)
 }
 
