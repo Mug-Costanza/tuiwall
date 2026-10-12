@@ -1,6 +1,5 @@
 # tuiwall (v0.1.0)
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/Mug-Costanza/tuiwall)](https://goreportcard.com/report/github.com/Mug-Costanza/tuiwall)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/Mug-Costanza/tuiwall)](https://github.com/Mug-Costanza/tuiwall/releases)
 
